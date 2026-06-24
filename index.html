@@ -35,7 +35,7 @@ window.MS_CONFIG = {
   adminAllowlist: ["ahmed@core-velocity.com"],                      // ONLY Ahmed may open this tool
   sharedDriveUser: "demo@core-velocity.com",                        // all data lives in this shared OneDrive
   filePath: "/OXEFIT/distribution-builder.json",                   // separate file from the sales tracker
-  scopes: ["Files.ReadWrite.All", "User.Read"]
+  scopes: ["Files.ReadWrite.All", "User.Read", "Mail.Send"]
 };
 </script>
 
@@ -158,6 +158,16 @@ window.MS_CONFIG = {
         window.__OXE_USER__ = account.username;
         window.__OXE_ADMIN__ = true;
         window.storage = oneDriveAdapter(cfg, getToken);
+        // direct send from the signed-in admin's Outlook via Microsoft Graph
+        window.__oxeSendMail = function(to, subject, bodyText){
+          return getToken().then(function(tok){
+            return fetch("https://graph.microsoft.com/v1.0/me/sendMail", {
+              method: "POST",
+              headers: { Authorization: "Bearer " + tok, "Content-Type": "application/json" },
+              body: JSON.stringify({ message: { subject: subject, body: { contentType: "Text", content: bodyText }, toRecipients: [{ emailAddress: { address: to } }] }, saveToSentItems: true })
+            }).then(function(res){ return res.ok; });
+          });
+        };
         return resolve(true);
       }
 
@@ -217,6 +227,33 @@ const APPROVAL = {
   rejected: { label: "Rejected", color: "var(--red)" },
 };
 
+const EMAIL_TEMPLATE_VERSION = 2;
+const DEFAULT_EMAIL = {
+  subject: "OxeFit distribution partnership — {{country}}",
+  body:
+`Hi {{contactName}},
+
+I'm reaching out from {{distributor}}, the appointed global distributor for OxeFit — the AI- and robotics-powered connected strength & training platform, with 7,000+ systems already live. OxeFit isn't a single-room home gym: the same OxeLife ecosystem runs on both the XS1 (consumer) and the XP1 (commercial, performance & clinical), so one platform scales from a private residence to a hospital, hotel, academy or stadium — deployed today across seven verticals:
+
+• Medical & rehabilitation — settings such as Cleveland Clinic, Johns Hopkins, Select Medical
+• College & professional sports — e.g. Dallas Cowboys, LSU, Ohio State, Michigan State
+• Golf training, resorts & courses — e.g. Trump National Doral, Albany Bahamas
+• Biohacking, wellness & longevity — e.g. Upgrade Labs, Fountain Life
+• Hospitality & multi-dwelling — e.g. Hilton, Best Western, Greystar
+• Corporate fitness — e.g. Google, T-Mobile, Toyota
+• Consumer & senior living
+
+OxeFit is backed by leading athletes and clinicians — investors include Dak Prescott, Jason Witten, Dustin Johnson, Jalen Ramsey and orthopaedic surgeon Dr. James Andrews.
+
+We're selecting a partner to lead OxeFit in {{country}}, and {{company}} stands out for your reach across the premium fitness, wellness, hospitality and clinical channels.
+
+Could we set up a short call to walk through territory terms, margins and launch support? I'm glad to share the product deck and commercials.
+
+Best regards,
+{{senderName}}
+{{distributor}} — Global Distribution, OxeFit`,
+};
+
 function defaultState() {
   const criteria = [
     { id: uid(), label: "Premium fitness portfolio fit", weight: 5, hint: "Carries high-end / connected fitness brands" },
@@ -240,21 +277,8 @@ function defaultState() {
     distributor: "Core Velocity",
     senderName: "",
     cadence: [0, 4, 10, 21],
-    emailTemplate: {
-      subject: "OxeFit distribution partnership — {{country}}",
-      body:
-`Hi {{contactName}},
-
-I'm reaching out from {{distributor}}, the appointed global distributor for OxeFit — AI- and robotics-powered connected strength & training systems (XS1 for residential; XP1 for commercial, hospitality, performance and rehab settings).
-
-We're selecting a partner to lead OxeFit in {{country}}, and {{company}} stands out for your reach in the premium fitness and wellness channel.
-
-Would you be open to a short call to explore territory terms, margins, and launch support? I'm glad to share the product deck and commercials.
-
-Best regards,
-{{senderName}}
-{{distributor}} — Global Distribution, OxeFit`,
-    },
+    emailTemplate: { subject: DEFAULT_EMAIL.subject, body: DEFAULT_EMAIL.body },
+    emailTemplateVersion: EMAIL_TEMPLATE_VERSION,
     criteria,
     regions,
     prospects: [
@@ -265,6 +289,7 @@ Best regards,
         contactName: "First Last", contactEmail: "name@example.com",
         notes: "Placeholder so you can see scoring + the email draft. Delete once real prospects are added.",
         scores: { ...c(4) }, status: "new", lastContacted: null, contactCount: 0, emailApproval: "none",
+        emailSubject: "", emailBody: "",
       },
     ],
     updatedAt: new Date().toISOString(),
@@ -532,6 +557,7 @@ function setToProspects(set, criteria) {
       website: s.website, decisionMaker: s.decisionMaker || "", linkedIn: s.linkedIn || "",
       competitors: COMPETITORS[s.name] || "",
       contactName: "", contactEmail: s.contactEmail || "", notes: s.notes,
+      emailSubject: "", emailBody: "",
       scores, status: "new", lastContacted: null, contactCount: 0, emailApproval: "none" };
   });
 }
@@ -557,8 +583,13 @@ function App() {
   // backfill new fields + migrate old statuses on any loaded/imported data
   const normalize = (s) => {
     if (!s || !Array.isArray(s.prospects)) return s;
+    // bump the outreach email template to the latest all-sector version
+    if (s.emailTemplateVersion !== EMAIL_TEMPLATE_VERSION) {
+      s.emailTemplate = { subject: DEFAULT_EMAIL.subject, body: DEFAULT_EMAIL.body };
+      s.emailTemplateVersion = EMAIL_TEMPLATE_VERSION;
+    }
     s.prospects = s.prospects.map((p) => ({
-      decisionMaker: "", linkedIn: "", emailApproval: "none", competitors: "",
+      decisionMaker: "", linkedIn: "", emailApproval: "none", competitors: "", emailSubject: "", emailBody: "",
       ...p,
       competitors: p.competitors || COMPETITORS[p.name] || "",
       status: STATUS_MIGRATE[p.status] || p.status || "new",
@@ -989,8 +1020,8 @@ function Drawer({ prospect, state, patch, flash, onClose, onDelete, admin }) {
     distributor: state.distributor,
     senderName: state.senderName || "[your name]",
   };
-  const subject = fillTemplate(state.emailTemplate.subject, ctx);
-  const body = fillTemplate(state.emailTemplate.body, ctx);
+  const subject = prospect.emailSubject || fillTemplate(state.emailTemplate.subject, ctx);
+  const body = prospect.emailBody || fillTemplate(state.emailTemplate.body, ctx);
   const to = prospect.contactEmail || "";
   const outlookUrl = outlookCompose({ to, subject, body });
   const approval = prospect.emailApproval || "none";
@@ -1005,6 +1036,19 @@ function Drawer({ prospect, state, patch, flash, onClose, onDelete, admin }) {
     const a = document.createElement("a");
     a.href = url; a.download = `${prospect.name.replace(/[^\w]+/g, "_")}.eml`; a.click();
     URL.revokeObjectURL(url);
+  };
+  const resetDraft = () => { setField("emailSubject", ""); setField("emailBody", ""); flash("Reset to template"); };
+  const canSendDirect = typeof window !== "undefined" && typeof window.__oxeSendMail === "function";
+  const sendNow = async () => {
+    if (!to) return;
+    if (!window.confirm(`Send this email now from your Outlook to ${to}?`)) return;
+    flash("Sending…");
+    try {
+      const ok = await window.__oxeSendMail(to, subject, body);
+      if (ok === false) { flash("Send failed — check Mail.Send permission"); return; }
+      logSent();
+      flash("Sent via Outlook");
+    } catch (e) { flash("Send failed — " + ((e && e.message) || "error")); }
   };
 
   return (
@@ -1086,13 +1130,27 @@ function Drawer({ prospect, state, patch, flash, onClose, onDelete, admin }) {
             </div>
             <SelectField label="Update status" value={prospect.status} onChange={(v) => setField("status", v)} options={Object.keys(STATUS)} render={(k) => STATUS[k].label} />
 
-            <div className="sectionLabel">Approval & send</div>
-            <div className="approvalRow">
-              <span className="apprBadge" style={{ color: APPROVAL[approval].color, borderColor: APPROVAL[approval].color }}>{APPROVAL[approval].label}</span>
-              {!to && <span className="muted small">⚠ add a contact email to enable Outlook send</span>}
+            <div className="sectionLabel">Email — edit before approving</div>
+            <div className="mailField"><span className="muted small">To</span><div className="mailSubject">{to || "⚠ add a contact email"}</div></div>
+            <label className="field">
+              <span>Subject</span>
+              <input value={subject} disabled={approval === "sent"} onChange={(e) => setField("emailSubject", e.target.value)} />
+            </label>
+            <label className="field">
+              <span>Body {prospect.emailBody ? <em className="muted small">· edited</em> : <em className="muted small">· from template</em>}</span>
+              <textarea rows={15} value={body} disabled={approval === "sent"} onChange={(e) => setField("emailBody", e.target.value)} />
+            </label>
+            <div className="mailActions">
+              <button className="btn ghost small" onClick={resetDraft} disabled={approval === "sent" || (!prospect.emailBody && !prospect.emailSubject)}>Reset to template</button>
+              <button className="btn ghost small" onClick={() => copy(`${subject}\n\n${body}`, "Email")}>Copy</button>
             </div>
 
-            {/* workflow gate */}
+            <div className="sectionLabel">Approval &amp; send</div>
+            <div className="approvalRow">
+              <span className="apprBadge" style={{ color: APPROVAL[approval].color, borderColor: APPROVAL[approval].color }}>{APPROVAL[approval].label}</span>
+              {!to && <span className="muted small">⚠ add a contact email to send</span>}
+            </div>
+
             {approval === "none" || approval === "rejected" ? (
               <button className="btn primary full" onClick={() => { setApproval("pending"); flash("Submitted for admin approval"); }}>Submit for approval</button>
             ) : approval === "pending" ? (
@@ -1102,28 +1160,24 @@ function Drawer({ prospect, state, patch, flash, onClose, onDelete, admin }) {
                   <button className="btn primary" onClick={() => { setApproval("approved"); flash("Approved to send"); }}>Approve</button>
                 </div>
               ) : (
-                <p className="finePrint">Waiting for an admin to approve this email. Toggle <b>Admin</b> in the header (or ask your admin) to review it.</p>
+                <p className="finePrint">Waiting for an admin to approve this email. Toggle <b>Admin</b> in the header to review it.</p>
               )
             ) : approval === "approved" ? (
-              <div className="mailActions">
-                <button className="btn ghost" onClick={downloadEml} disabled={!to}>Download .eml</button>
-                <a className={`btn primary ${!to ? "disabledLink" : ""}`} href={to ? outlookUrl : undefined} target="_blank" rel="noreferrer" onClick={() => to && logSent()}>Send via Outlook & log</a>
+              <div>
+                {canSendDirect && <button className="btn primary full" onClick={sendNow} disabled={!to} style={{ marginBottom: 8 }}>✉ Send now via Outlook</button>}
+                <div className="mailActions">
+                  <button className="btn ghost" onClick={downloadEml} disabled={!to}>Download .eml</button>
+                  <a className={`btn ghost ${!to ? "disabledLink" : ""}`} href={to ? outlookUrl : undefined} target="_blank" rel="noreferrer" onClick={() => to && logSent()}>Open in Outlook compose</a>
+                </div>
+                <p className="finePrint">{canSendDirect
+                  ? '"Send now" sends this approved email straight from your Outlook (ahmed@core-velocity.com). "Open in Outlook compose" instead drops a pre-filled draft for you to review and send.'
+                  : '"Open in Outlook compose" opens a pre-filled draft in Outlook on the web — review and press send there. Sign in with Microsoft to enable one-click "Send now".'}</p>
               </div>
             ) : (
               <p className="finePrint">Sent on {prospect.lastContacted}. Follow-up is now on the cadence timer. Re-submit if you want to send again.</p>
             )}
 
-            <div className="sectionLabel">Draft preview</div>
-            <div className="mailField"><span className="muted small">To</span><div className="mailSubject">{to || "—"}</div></div>
-            <div className="mailField"><span className="muted small">Subject</span><div className="mailSubject">{subject}</div></div>
-            <pre className="mailBody">{body}</pre>
-            <div className="mailActions">
-              <button className="btn ghost" onClick={() => copy(`${subject}\n\n${body}`, "Email")}>Copy email</button>
-              <button className="btn ghost danger" onClick={onDelete}>Delete prospect</button>
-            </div>
-            <p className="finePrint">
-              "Send via Outlook" opens a pre-filled draft in Outlook on the web — you (or whoever's signed in) review and press send there. Nothing is sent automatically. Approvals gate which drafts reach that step.
-            </p>
+            <button className="btn ghost danger small" onClick={onDelete} style={{ marginTop: 16 }}>Delete prospect</button>
           </div>
         )}
       </aside>
@@ -1290,6 +1344,10 @@ function Outreach({ state, patch, flash }) {
         <Field label="Your name (sender)" value={state.senderName} onChange={setSender} />
         <Field label="Subject" value={state.emailTemplate.subject} onChange={(v) => setTpl("subject", v)} />
         <FieldArea label="Body" value={state.emailTemplate.body} onChange={(v) => setTpl("body", v)} rows={12} />
+        <div className="mailActions">
+          <button className="btn ghost small" onClick={() => patch((n) => { n.emailTemplate = { subject: DEFAULT_EMAIL.subject, body: DEFAULT_EMAIL.body }; })}>Reset to OxeFit default</button>
+        </div>
+        <p className="finePrint">This is the master template (covers all seven OxeFit verticals). Per-distributor tweaks happen in each prospect's Outreach email tab before approval — those don't change this master.</p>
       </section>
 
       <section className="card sending">
@@ -1315,13 +1373,25 @@ function Approvals({ state, patch, flash, admin, setAdmin }) {
   const setApproval = (id, val, msg) => { patch((n) => { n.prospects.find((x) => x.id === id).emailApproval = val; }); flash(msg); };
   const draftFor = (p) => {
     const ctx = { contactName: p.contactName || "there", company: p.name, country: p.country || "your market", distributor: state.distributor, senderName: state.senderName || "[your name]" };
-    return { to: p.contactEmail || "", subject: fillTemplate(state.emailTemplate.subject, ctx), body: fillTemplate(state.emailTemplate.body, ctx) };
+    return { to: p.contactEmail || "", subject: p.emailSubject || fillTemplate(state.emailTemplate.subject, ctx), body: p.emailBody || fillTemplate(state.emailTemplate.body, ctx) };
   };
   const sendLog = (id) => patch((n) => {
     const p = n.prospects.find((x) => x.id === id);
     p.lastContacted = todayISO(); p.contactCount = (p.contactCount || 0) + 1;
     p.status = p.status === "email_shared" ? "follow_up" : "email_shared"; p.emailApproval = "sent";
   });
+  const canSendDirect = typeof window !== "undefined" && typeof window.__oxeSendMail === "function";
+  const sendDirect = async (p) => {
+    const d = draftFor(p);
+    if (!d.to) return;
+    if (!window.confirm(`Send now from your Outlook to ${d.to}?`)) return;
+    flash("Sending…");
+    try {
+      const ok = await window.__oxeSendMail(d.to, d.subject, d.body);
+      if (ok === false) { flash("Send failed — check Mail.Send permission"); return; }
+      sendLog(p.id); flash("Sent via Outlook");
+    } catch (e) { flash("Send failed"); }
+  };
 
   return (
     <div>
@@ -1374,7 +1444,8 @@ function Approvals({ state, patch, flash, admin, setAdmin }) {
                   <div className="muted small">{d.to || "⚠ add email"} · {d.subject}</div>
                 </div>
                 <div className="dueRight">
-                  <a className={`btn primary small ${!d.to ? "disabledLink" : ""}`} href={d.to ? outlookCompose(d) : undefined} target="_blank" rel="noreferrer" onClick={() => d.to && sendLog(p.id)}>Send via Outlook</a>
+                  {canSendDirect && <button className="btn primary small" onClick={() => sendDirect(p)} disabled={!d.to}>✉ Send now</button>}
+                  <a className={`btn ghost small ${!d.to ? "disabledLink" : ""}`} href={d.to ? outlookCompose(d) : undefined} target="_blank" rel="noreferrer" onClick={() => d.to && sendLog(p.id)}>Outlook compose</a>
                 </div>
               </li>
             );
@@ -1513,6 +1584,7 @@ function ExportMenu({ state, flash, setState }) {
           decisionMaker: p.decisionMaker || "", linkedIn: p.linkedIn || "",
           competitors: p.competitors || COMPETITORS[p.name] || "",
           contactName: p.contactName || "", contactEmail: p.contactEmail || "", notes: p.notes || "",
+          emailSubject: p.emailSubject || "", emailBody: p.emailBody || "",
           scores: p.scores && typeof p.scores === "object"
             ? Object.fromEntries(state.criteria.map((c) => [c.id, Number(p.scores[c.id]) || 0]))
             : Object.fromEntries(state.criteria.map((c) => [c.id, 0])),
