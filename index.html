@@ -1,0 +1,1722 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>OxeFit Distribution Builder — Core Velocity</title>
+<style>
+  html, body { margin: 0; background: #0c0f14; }
+  #root { min-height: 100vh; }
+  #boot { color: #8693a6; font-family: ui-monospace, Menlo, Consolas, monospace; padding: 48px; text-align: center; }
+</style>
+<!-- React + Babel from CDN (first load needs an internet connection) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js" crossorigin></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.min.js" crossorigin></script>
+</head>
+<body>
+<div id="root"><div id="boot">Loading distribution console…</div></div>
+
+<!-- storage adapter: prefer the Claude artifact store, else fall back to localStorage, else in-memory -->
+<script>
+(function () {
+  if (window.storage && typeof window.storage.get === "function") return; // Claude runtime provides it
+  var mem = {};
+  var hasLS = (function () { try { var k="__t"; localStorage.setItem(k,"1"); localStorage.removeItem(k); return true; } catch (e) { return false; } })();
+  function rd(k){ return hasLS ? localStorage.getItem(k) : (k in mem ? mem[k] : null); }
+  function wr(k,v){ if (hasLS) localStorage.setItem(k,v); else mem[k]=v; }
+  function del(k){ if (hasLS) localStorage.removeItem(k); else delete mem[k]; }
+  function keys(){ if (hasLS){ var a=[]; for (var i=0;i<localStorage.length;i++) a.push(localStorage.key(i)); return a; } return Object.keys(mem); }
+  window.storage = {
+    get:   function (k){ var v = rd(k); return Promise.resolve(v == null ? null : { key: k, value: v, shared: false }); },
+    set:   function (k, v){ wr(k, v); return Promise.resolve({ key: k, value: v, shared: false }); },
+    delete:function (k){ del(k); return Promise.resolve({ key: k, deleted: true, shared: false }); },
+    list:  function (prefix){ var p = prefix || ""; return Promise.resolve({ keys: keys().filter(function (x){ return x.indexOf(p) === 0; }), prefix: p, shared: false }); }
+  };
+})();
+</script>
+
+<!-- application (JSX transpiled in-browser by Babel) -->
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo, useRef } = React;
+
+
+/* =========================================================================
+   OxeFit Distribution Builder — Core Velocity
+   A distributor pipeline + scoring + outreach console.
+   - Define scoring CRITERIA (the "logic") and weight them per market reality.
+   - Add prospects (distributors / dealers / resellers) per region & country.
+   - Each prospect is scored -> ranked -> top candidates surface automatically.
+   - Outreach cadence computes follow-up due dates and surfaces overdue ones.
+   - Email drafts are generated from an editable template (copy / open in mail).
+   - State persists between sessions via window.storage.
+   NOTE: This tool drafts + tracks. Actual email SENDING stays with you
+   (Copy / Open in Mail) so a human approves every send.
+   ========================================================================= */
+
+const STORAGE_KEY = "oxefit_distribution_state_v1";
+const todayISO = () => new Date().toISOString().slice(0, 10);
+const uid = () => Math.random().toString(36).slice(2, 9);
+
+const STATUS = {
+  new: { label: "New", color: "var(--muted)" },
+  email_shared: { label: "Email Shared", color: "var(--cyan)" },
+  follow_up: { label: "Follow-up", color: "var(--accent)" },
+  no_answer: { label: "No Answer", color: "var(--red-soft)" },
+  lost: { label: "Lost", color: "var(--red)" },
+};
+const ACTIVE_OUTREACH = ["email_shared", "follow_up"]; // statuses that need follow-up
+// migrate older saved statuses to the current set
+const STATUS_MIGRATE = { contacted: "email_shared", responded: "follow_up", in_discussion: "follow_up", won: "follow_up" };
+
+// email approval lifecycle (separate from communication status)
+const APPROVAL = {
+  none: { label: "Not submitted", color: "var(--muted)" },
+  pending: { label: "Pending approval", color: "var(--citron)" },
+  approved: { label: "Approved to send", color: "var(--green)" },
+  sent: { label: "Sent", color: "var(--cyan)" },
+  rejected: { label: "Rejected", color: "var(--red)" },
+};
+
+function defaultState() {
+  const criteria = [
+    { id: uid(), label: "Premium fitness portfolio fit", weight: 5, hint: "Carries high-end / connected fitness brands" },
+    { id: uid(), label: "After-sales, install & service", weight: 5, hint: "Critical: connected hardware + subscription support" },
+    { id: uid(), label: "Commercial / hospitality reach", weight: 4, hint: "Gyms, resorts, spas, multi-unit residential" },
+    { id: uid(), label: "Geographic coverage in country", weight: 4, hint: "Footprint across the target market" },
+    { id: uid(), label: "Connected / tech fitness experience", weight: 4, hint: "Has sold app + subscription hardware before" },
+    { id: uid(), label: "Financial strength & scale", weight: 3, hint: "Can stock, fund marketing, carry receivables" },
+    { id: uid(), label: "Premium brand alignment", weight: 3, hint: "Positioning matches OxeFit's premium tier" },
+    { id: uid(), label: "Rehab / sports-performance access", weight: 2, hint: "Clinics, academies, pro facilities" },
+  ];
+  const regions = [
+    { id: uid(), name: "Middle East", countries: ["UAE", "Saudi Arabia", "Qatar", "Kuwait", "Bahrain", "Oman", "Jordan"] },
+    { id: uid(), name: "Africa", countries: ["South Africa", "Egypt", "Morocco", "Kenya", "Nigeria"] },
+    { id: uid(), name: "CEE", countries: ["Poland", "Czechia", "Hungary", "Romania", "Croatia"] },
+    { id: uid(), name: "APAC", countries: ["Singapore", "Hong Kong", "Japan", "South Korea", "India", "Indonesia", "Malaysia", "Thailand"] },
+    { id: uid(), name: "Australia", countries: ["Australia", "New Zealand"] },
+  ];
+  const c = (cri) => Object.fromEntries(criteria.map((x) => [x.id, cri]));
+  return {
+    distributor: "Core Velocity",
+    senderName: "",
+    cadence: [0, 4, 10, 21],
+    emailTemplate: {
+      subject: "OxeFit distribution partnership — {{country}}",
+      body:
+`Hi {{contactName}},
+
+I'm reaching out from {{distributor}}, the appointed global distributor for OxeFit — AI- and robotics-powered connected strength & training systems (XS1 for residential; XP1 for commercial, hospitality, performance and rehab settings).
+
+We're selecting a partner to lead OxeFit in {{country}}, and {{company}} stands out for your reach in the premium fitness and wellness channel.
+
+Would you be open to a short call to explore territory terms, margins, and launch support? I'm glad to share the product deck and commercials.
+
+Best regards,
+{{senderName}}
+{{distributor}} — Global Distribution, OxeFit`,
+    },
+    criteria,
+    regions,
+    prospects: [
+      {
+        id: uid(), name: "Example Distributor Co. (replace me)", type: "Distributor",
+        region: "Middle East", country: "UAE", website: "https://example.com",
+        decisionMaker: "First Last (CEO)", linkedIn: "", competitors: "e.g. Technogym, Life Fitness (replace me)",
+        contactName: "First Last", contactEmail: "name@example.com",
+        notes: "Placeholder so you can see scoring + the email draft. Delete once real prospects are added.",
+        scores: { ...c(4) }, status: "new", lastContacted: null, contactCount: 0, emailApproval: "none",
+      },
+    ],
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+/* ---- scoring ---- */
+function weightedScore(prospect, criteria) {
+  const totalW = criteria.reduce((s, c) => s + (Number(c.weight) || 0), 0);
+  if (!totalW) return 0;
+  const got = criteria.reduce((s, c) => s + ((Number(prospect.scores?.[c.id]) || 0) / 5) * (Number(c.weight) || 0), 0);
+  return Math.round((got / totalW) * 100);
+}
+function scoreBand(s) {
+  if (s >= 80) return { label: "Prime", color: "var(--green)" };
+  if (s >= 60) return { label: "Strong", color: "var(--cyan)" };
+  if (s >= 40) return { label: "Possible", color: "var(--accent)" };
+  return { label: "Weak", color: "var(--red-soft)" };
+}
+
+/* ---- follow-up logic ---- */
+function nextFollowUp(prospect, cadence) {
+  if (!ACTIVE_OUTREACH.includes(prospect.status) || !prospect.lastContacted) return null;
+  const idx = Math.min(prospect.contactCount, cadence.length - 1);
+  const stepDays = cadence[Math.max(0, idx)] ?? cadence[cadence.length - 1];
+  const base = new Date(prospect.lastContacted + "T00:00:00");
+  base.setDate(base.getDate() + Number(stepDays));
+  return base.toISOString().slice(0, 10);
+}
+function followUpState(prospect, cadence) {
+  const due = nextFollowUp(prospect, cadence);
+  if (!due) return null;
+  const diff = Math.round((new Date(due) - new Date(todayISO())) / 86400000);
+  if (diff < 0) return { due, kind: "overdue", days: Math.abs(diff) };
+  if (diff <= 2) return { due, kind: "soon", days: diff };
+  return { due, kind: "scheduled", days: diff };
+}
+
+function fillTemplate(tpl, ctx) {
+  return tpl.replace(/\{\{(\w+)\}\}/g, (_, k) => (ctx[k] ?? `{{${k}}}`));
+}
+
+/* Microsoft Outlook web compose deeplink — opens a pre-filled draft the user reviews & sends */
+function outlookCompose({ to, subject, body }) {
+  const q = new URLSearchParams({ to: to || "", subject: subject || "", body: body || "" });
+  return `https://outlook.office.com/mail/deeplink/compose?${q.toString()}`;
+}
+/* .eml content (X-Unsent makes Outlook desktop open it as an editable draft) */
+function buildEml({ to, subject, body }) {
+  return ["To: " + (to || ""), "Subject: " + (subject || ""), "X-Unsent: 1",
+    "Content-Type: text/plain; charset=utf-8", "", body || ""].join("\r\n");
+}
+
+/* ---- researched starter set (UAE + KSA). scores map positionally to the 8 default criteria ----
+   order: [premium fit, after-sales/service, commercial/hospitality, geo coverage,
+           connected/tech, financial, brand alignment, rehab/performance]
+   decisionMaker / linkedIn / contactEmail filled only where publicly verifiable. */
+const STARTER_SET = [
+  { name: "RS Fitness", type: "Distributor", region: "Middle East", country: "UAE", website: "https://rsfitness.ae",
+    decisionMaker: "Ayham Masri — General Manager", linkedIn: "https://www.linkedin.com/in/ayham-masri-b4729568/", contactEmail: "",
+    notes: "Part of RS Leisure Group / Raymond Sport (legacy since 1987). Serves ruling families, armed forces, govt, sports clubs, hotels & rehab facilities. Represents Precor, Wattbike, Body Bike, Marpo, TKO, Bilt + Merrithew Pilates + Myzone. Closest fit.",
+    scores: [5, 4, 5, 4, 4, 4, 5, 4] },
+  { name: "Fh Fitness", type: "Distributor", region: "Middle East", country: "UAE", website: "https://www.fhfitness.ae",
+    decisionMaker: "Fadi Hassoun — Founder/Owner (the 'FH')", linkedIn: "https://ae.linkedin.com/in/fadihassoun", contactEmail: "",
+    notes: "FH Fitness Equipment Trading (Abu Dhabi/Dubai). Trusted by corporate offices & luxury hotels. Turnkey + local after-sales (parts, on-site repair) + lease-to-own financing. Connected-cardio focus.",
+    scores: [4, 5, 5, 4, 4, 4, 3, 2] },
+  { name: "NAS Health Tech", type: "Distributor", region: "Middle East", country: "UAE", website: "https://nashealth.ae",
+    decisionMaker: "", linkedIn: "https://www.linkedin.com/company/nas-health-tech-llc", contactEmail: "",
+    notes: "Sole UAE distributor of Core Health & Fitness (StairMaster, Star Trac, Nautilus, Schwinn) — strong premium commercial portfolio. Decision-maker not public — verify via site enquiry / LinkedIn.",
+    scores: [5, 4, 4, 4, 3, 4, 4, 2] },
+  { name: "BSET Sports Equipment Trading", type: "Distributor", region: "Middle East", country: "UAE", website: "https://bsetllc.com",
+    decisionMaker: "", linkedIn: "https://www.instagram.com/bsetsports/", contactEmail: "",
+    notes: "Al Qusais, Dubai. High-end health/fitness/sports/leisure (Lexco, Harvia, Devatec); clients incl. hotel chains, universities, corporates, healthcare clubs. Strong service/maintenance arm. Decision-maker not public — phone/site.",
+    scores: [4, 5, 5, 4, 3, 3, 4, 3] },
+  { name: "Dubai Sports LLC", type: "Distributor", region: "Middle East", country: "UAE", website: "",
+    decisionMaker: "", linkedIn: "", contactEmail: "",
+    notes: "Develops top-tier wellness facilities; branded fitness/wellness solutions; customized projects. ME leader. Contact + decision-maker to verify.",
+    scores: [4, 4, 5, 4, 3, 4, 4, 2] },
+  { name: "SFT EMS Trading", type: "Distributor", region: "Middle East", country: "UAE", website: "",
+    decisionMaker: "", linkedIn: "", contactEmail: "",
+    notes: "Exclusive GCC distributor of miha bodytec (EMS). Proven at selling premium connected training tech into studios/wellness. Contact to verify.",
+    scores: [4, 3, 4, 3, 5, 3, 4, 3] },
+  { name: "Spartan Athletique", type: "Dealer", region: "Middle East", country: "UAE", website: "https://www.spartanathletique.com",
+    decisionMaker: "", linkedIn: "", contactEmail: "",
+    notes: "Gym design, fit-out, flooring + spa & wellness across GCC, incl. luxury villa gyms (Al Barari) — relevant for the XS1 residential play. Contact via site.",
+    scores: [3, 4, 4, 4, 2, 3, 3, 1] },
+  { name: "Qooah", type: "Dealer", region: "Middle East", country: "UAE", website: "",
+    decisionMaker: "", linkedIn: "", contactEmail: "",
+    notes: "Tech-forward; brings cutting-edge fitness equipment & technology to UAE/GCC with premium brands. Contact to verify.",
+    scores: [4, 3, 4, 3, 4, 3, 4, 2] },
+  { name: "Sporta / Al Hayat Investments", type: "Distributor", region: "Middle East", country: "Saudi Arabia", website: "https://sporta.com.sa",
+    decisionMaker: "CEO, Al Hayat Investments (name to verify) — also VP Strategy & Planning", linkedIn: "https://www.linkedin.com/company/al-hayat-investment", contactEmail: "",
+    notes: "Top KSA fit. Distributes Cybex, Octane, First Degree, Impulse, Precor, HOIST, Merrithew Pilates, Harvia. Showrooms Riyadh/Jeddah/Khobar. Spa + fit-out + education + after-sales. Vision 2030 aligned. Tel +966-11-4552707.",
+    scores: [4, 4, 5, 4, 3, 4, 4, 3] },
+  { name: "Alqudra Sports Equipment", type: "Distributor", region: "Middle East", country: "Saudi Arabia", website: "https://www.alqudra.sa",
+    decisionMaker: "", linkedIn: "", contactEmail: "",
+    notes: "Authorized GCC distributor (Force USA, Anatomy Fitness); 100+ commercial, 500+ home, 150+ office gyms; own repair/service team. Decision-maker to verify.",
+    scores: [4, 4, 4, 4, 3, 4, 3, 2] },
+  { name: "Fitness Lines", type: "Distributor", region: "Middle East", country: "Saudi Arabia", website: "",
+    decisionMaker: "", linkedIn: "", contactEmail: "",
+    notes: "Industry-leader supplier since 2002; showrooms in Jeddah, Riyadh, Al Khobar. Historically tied to Technogym in KSA — check brand conflict. Contact to verify.",
+    scores: [4, 4, 4, 4, 3, 3, 4, 2] },
+  { name: "Athleco", type: "Dealer", region: "Middle East", country: "Saudi Arabia", website: "https://www.athleco.com",
+    decisionMaker: "Guy Ruediger (key contact)", linkedIn: "", contactEmail: "info@athleco.com",
+    notes: "Premier functional-fitness supplier in KSA; outfits major CrossFit facilities; official SandClash supplier. Best for performance/community channel. Direct: guy.ruediger@athleco.com · Riyadh.",
+    scores: [3, 3, 4, 4, 2, 3, 3, 4] },
+];
+
+/* ---- expansion set: APAC, Australia/NZ, Africa, CEE (same score order as STARTER_SET) ---- */
+const GLOBAL_SET = [
+  // ---- APAC ----
+  { name: "Cycling Bears", type: "Dealer", region: "APAC", country: "Singapore", website: "https://www.cyclingbears.com",
+    decisionMaker: "", linkedIn: "", contactEmail: "info@cyclingbears.com",
+    notes: "Luxury gym designer & distributor for homes, hotels, resorts, yachts, private clubs (SG + Australia). White-glove service; distributes PENT, Ciclotte, Stil-Fit, Nohrd. Premium + hospitality + residential.",
+    scores: [5, 4, 5, 3, 3, 3, 5, 2] },
+  { name: "Reflex-O", type: "Distributor", region: "APAC", country: "Singapore", website: "https://www.reflex-o.com.sg",
+    decisionMaker: "", linkedIn: "", contactEmail: "",
+    notes: "Distributing world-renowned fitness equipment since 1985. Turnkey wellness design, sauna/steam, training, leasing, consultation. Established commercial channel.",
+    scores: [4, 4, 4, 4, 2, 3, 4, 2] },
+  { name: "Grand Slam Fitness", type: "Distributor", region: "APAC", country: "India", website: "",
+    decisionMaker: "", linkedIn: "", contactEmail: "",
+    notes: "Premium import-distributor (distributes True Fitness in India). Right channel for imported connected systems. Verify URL + contact.",
+    scores: [4, 4, 4, 4, 3, 3, 4, 2] },
+  { name: "The India Fitness Connect (TIFC)", type: "Distributor", region: "APAC", country: "India", website: "",
+    decisionMaker: "", linkedIn: "", contactEmail: "",
+    notes: "Authorized partner for Tier-1 global brands (Life Fitness/Technogym/Precor/Hammer) with install, staff training, after-sales. Verify contact.",
+    scores: [4, 4, 4, 4, 3, 3, 4, 2] },
+  { name: "SF HealthTech", type: "Distributor", region: "APAC", country: "India", website: "",
+    decisionMaker: "", linkedIn: "", contactEmail: "",
+    notes: "International-quality fitness equipment; customized facility setup, install + logistics. Verify URL + contact.",
+    scores: [4, 3, 4, 4, 3, 3, 3, 2] },
+  // ---- Australia / NZ ----
+  { name: "NovoFit", type: "Distributor", region: "Australia", country: "Australia", website: "https://novofit.com.au",
+    decisionMaker: "", linkedIn: "", contactEmail: "",
+    notes: "Hotel gyms (Hilton, InterContinental), AIS, pro sporting clubs, apartment/residential; thousands of installs + ongoing service/maintenance. Strong hospitality + performance + service.",
+    scores: [4, 5, 5, 4, 3, 4, 3, 3] },
+  { name: "Performaxx", type: "Distributor", region: "Australia", country: "Australia", website: "https://www.performaxx.com.au",
+    decisionMaker: "", linkedIn: "", contactEmail: "",
+    notes: "Elite world-class brands across Australia + New Zealand; full fit-out; rehab/performance via Desmotec. Premium performance channel.",
+    scores: [4, 4, 4, 4, 3, 3, 4, 4] },
+  // ---- Africa ----
+  { name: "Gymstore South Africa", type: "Distributor", region: "Africa", country: "South Africa", website: "https://gymstore.co.za",
+    decisionMaker: "", linkedIn: "", contactEmail: "",
+    notes: "Africa's leading premium commercial distributor; exclusive Impulse/SOLE/Livepro. Serves hotels, health clubs, govt across SA + 16 SADC countries. Cross-border logistics + after-sales. Regional gateway.",
+    scores: [4, 5, 5, 5, 3, 4, 3, 2] },
+  { name: "MiFitness (South Africa)", type: "Distributor", region: "Africa", country: "South Africa", website: "https://mifitness.co.za",
+    decisionMaker: "", linkedIn: "", contactEmail: "",
+    notes: "Largest gym equipment supplier on the continent. Hospitality & leisure (hotels, resorts, lodges, wellness); 3D design, install, 10+ service teams. Strong service + hospitality.",
+    scores: [4, 5, 5, 4, 3, 4, 4, 2] },
+  { name: "Active Lifestyle Solutions", type: "Distributor", region: "Africa", country: "South Africa", website: "https://activelifestylesolutions.co.za",
+    decisionMaker: "", linkedIn: "", contactEmail: "",
+    notes: "Leading independent distributor of strength & cardio for Southern African commercial, corporate and residential wellness. Verify decision-maker.",
+    scores: [4, 4, 4, 4, 2, 3, 4, 2] },
+  // ---- CEE ----
+  { name: "Perfect Fitness Service", type: "Distributor", region: "CEE", country: "Poland", website: "",
+    decisionMaker: "", linkedIn: "", contactEmail: "",
+    notes: "Exclusive Poland distributor of professional brands (GYM80, Intenza) since 1997; also medical/rehab equipment. Premium import channel. Verify URL + contact.",
+    scores: [4, 4, 4, 4, 3, 3, 4, 3] },
+  { name: "Calypso Fitness / FIT MY", type: "Distributor", region: "CEE", country: "Poland", website: "",
+    decisionMaker: "", linkedIn: "", contactEmail: "",
+    notes: "Operates 50+ clubs and distributes PENT luxury fitness equipment (hotels/resorts). Premium + hospitality positioning. Verify contact.",
+    scores: [4, 3, 5, 4, 2, 4, 5, 1] },
+  { name: "Oprema.Fit", type: "Dealer", region: "CEE", country: "Croatia", website: "https://oprema.fit",
+    decisionMaker: "", linkedIn: "", contactEmail: "info@oprema.fit",
+    notes: "Zagreb-based premium equipment distributor (carries brands like Gungnir). Tel +385 95 702 9603. Entry point for Croatia/Adriatic.",
+    scores: [3, 3, 4, 3, 2, 3, 4, 2] },
+  { name: "Orrlabda", type: "Dealer", region: "CEE", country: "Hungary", website: "https://orrlabda.hu",
+    decisionMaker: "", linkedIn: "", contactEmail: "info@orrlabda.hu",
+    notes: "Hungary premium equipment distributor (carries brands like Gungnir). Tel +36 70 670 6931. Entry point for Hungary.",
+    scores: [3, 3, 4, 3, 2, 3, 4, 2] },
+];
+
+/* minimal CSV parser: quoted fields, embedded commas, escaped quotes, CRLF */
+function parseCSV(text) {
+  const rows = []; let row = [], field = "", q = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (q) {
+      if (ch === '"') { if (text[i + 1] === '"') { field += '"'; i++; } else q = false; }
+      else field += ch;
+    } else if (ch === '"') q = true;
+    else if (ch === ",") { row.push(field); field = ""; }
+    else if (ch === "\n") { row.push(field); rows.push(row); row = []; field = ""; }
+    else if (ch === "\r") { /* skip */ }
+    else field += ch;
+  }
+  if (field.length || row.length) { row.push(field); rows.push(row); }
+  return rows.filter((r) => r.some((c) => c.trim() !== ""));
+}
+
+/* map imported rows to prospects; score columns (s1…s8) align to criteria by position */
+function rowsToProspects(rows, criteria) {
+  if (!rows.length) return [];
+  const header = rows[0].map((h) => h.trim().toLowerCase());
+  const has = (name) => header.indexOf(name) >= 0;
+  const idx = (name) => header.indexOf(name);
+  const hasHeader = has("name");
+  const body = hasHeader ? rows.slice(1) : rows;
+  const col = (r, name, fb) => { const i = has(name) ? idx(name) : fb; return i >= 0 ? (r[i] ?? "").trim() : ""; };
+  const scoreCols = header.map((h, i) => (/^s\d+$/.test(h) ? i : -1)).filter((i) => i >= 0);
+  return body.map((r) => {
+    const sVals = scoreCols.map((i) => Number(r[i]) || 0);
+    const scores = {};
+    criteria.forEach((c, i) => { scores[c.id] = Math.max(0, Math.min(5, sVals[i] ?? 0)); });
+    return {
+      id: uid(),
+      name: col(r, "name", 0) || "Unnamed",
+      type: col(r, "type", 1) || "Distributor",
+      region: col(r, "region", 2) || "",
+      country: col(r, "country", 3) || "",
+      website: col(r, "website", 4) || "",
+      decisionMaker: col(r, "decisionmaker", 8) || "",
+      linkedIn: col(r, "linkedin", 9) || "",
+      competitors: col(r, "competitors", 10) || "",
+      contactName: col(r, "contactname", 5) || "",
+      contactEmail: col(r, "contactemail", 6) || "",
+      notes: col(r, "notes", 7) || "",
+      scores, status: "new", lastContacted: null, contactCount: 0, emailApproval: "none",
+    };
+  }).filter((p) => p.name && p.name !== "Unnamed");
+}
+
+/* ---- competitor / overlapping premium brands each prospect is known to carry ----
+   Keyed by name so it backfills existing data on load and new set-loads alike.
+   "CONFLICT" markers = already aligned to a direct premium-connected competitor. */
+const COMPETITORS = {
+  "RS Fitness": "Precor, Wattbike, Myzone (connected tracking) — premium-connected channel proven",
+  "Fh Fitness": "Connected cardio brands (verify specifics)",
+  "NAS Health Tech": "Core Health & Fitness: Star Trac, Nautilus, StairMaster, Schwinn",
+  "BSET Sports Equipment Trading": "Lexco commercial; Harvia (sauna) — no direct connected competitor",
+  "Dubai Sports LLC": "Branded wellness solutions (verify brands)",
+  "SFT EMS Trading": "miha bodytec (EMS — adjacent connected tech)",
+  "Spartan Athletique": "Fit-out / flooring focus (verify equipment brands)",
+  "Qooah": "Premium tech-forward brands (verify)",
+  "Sporta / Al Hayat Investments": "Cybex & Precor (Life Fitness family), Octane, HOIST, Impulse — CONFLICT: carries LF-family",
+  "Alqudra Sports Equipment": "Force USA, Anatomy — strength (not connected)",
+  "Fitness Lines": "Technogym (historical KSA tie) — CONFLICT RISK",
+  "Athleco": "Functional / CrossFit brands — no premium connected",
+  "Cycling Bears": "PENT, Ciclotte, Stil-Fit, Nohrd — luxury design (some connected-adjacent)",
+  "Reflex-O": "World-renowned brands since 1985 (verify specifics)",
+  "Grand Slam Fitness": "True Fitness (premium cardio/strength)",
+  "The India Fitness Connect (TIFC)": "Life Fitness, Technogym, Precor, Hammer — CONFLICT: Tier-1 incumbents",
+  "SF HealthTech": "International brands (verify)",
+  "NovoFit": "Multiple commercial brands; hotel/chain installs (verify brands)",
+  "Performaxx": "Arsenal, Prime, Atlantis, Power Lift, Intek; Desmotec (rehab) — US strength",
+  "Gymstore South Africa": "Impulse, SOLE, Livepro",
+  "MiFitness (South Africa)": "Torque, DKN, Matrix (Matrix has connected consoles)",
+  "Active Lifestyle Solutions": "Strength / cardio brands (verify)",
+  "Perfect Fitness Service": "GYM80, Intenza",
+  "Calypso Fitness / FIT MY": "PENT (luxury)",
+  "Oprema.Fit": "Gungnir + premium brands (verify)",
+  "Orrlabda": "Gungnir + premium brands (verify)",
+};
+// brands that count as a DIRECT premium-connected competitor when present
+const COMPETITOR_KEYWORDS = ["Technogym", "Life Fitness", "LF-family", "Speediance", "Tonal", "Peloton", "Vitruvian", "Cybex", "Precor", "Hammer", "Keiser", "Matrix"];
+const competitorHit = (p) => COMPETITOR_KEYWORDS.filter((k) => (p.competitors || "").toLowerCase().includes(k.toLowerCase()));
+const hasConflict = (p) => /conflict/i.test(p.competitors || "");
+
+/* build prospects from a set against the current criteria */
+function setToProspects(set, criteria) {
+  return set.map((s) => {
+    const scores = {};
+    criteria.forEach((c, i) => { scores[c.id] = s.scores[i] ?? 0; });
+    return { id: uid(), name: s.name, type: s.type, region: s.region, country: s.country,
+      website: s.website, decisionMaker: s.decisionMaker || "", linkedIn: s.linkedIn || "",
+      competitors: COMPETITORS[s.name] || "",
+      contactName: "", contactEmail: s.contactEmail || "", notes: s.notes,
+      scores, status: "new", lastContacted: null, contactCount: 0, emailApproval: "none" };
+  });
+}
+const starterProspects = (criteria) => setToProspects(STARTER_SET, criteria);
+const globalProspects = (criteria) => setToProspects(GLOBAL_SET, criteria);
+
+/* append, skipping duplicates by name+country (case-insensitive) */
+function mergeProspects(existing, incoming) {
+  const key = (p) => `${(p.name || "").toLowerCase().trim()}|${(p.country || "").toLowerCase().trim()}`;
+  const seen = new Set(existing.map(key));
+  const added = incoming.filter((p) => !seen.has(key(p)));
+  return { merged: [...existing, ...added], addedCount: added.length, skipped: incoming.length - added.length };
+}
+
+function App() {
+  const [state, setState] = useState(null);
+  const [tab, setTab] = useState("dashboard");
+  const [loaded, setLoaded] = useState(false);
+  const [toast, setToast] = useState("");
+  const [admin, setAdmin] = useState(false);
+  const saveTimer = useRef(null);
+
+  // backfill new fields + migrate old statuses on any loaded/imported data
+  const normalize = (s) => {
+    if (!s || !Array.isArray(s.prospects)) return s;
+    s.prospects = s.prospects.map((p) => ({
+      decisionMaker: "", linkedIn: "", emailApproval: "none", competitors: "",
+      ...p,
+      competitors: p.competitors || COMPETITORS[p.name] || "",
+      status: STATUS_MIGRATE[p.status] || p.status || "new",
+    }));
+    return s;
+  };
+
+  /* load */
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await window.storage.get(STORAGE_KEY);
+        setState(normalize(r?.value ? JSON.parse(r.value) : defaultState()));
+      } catch {
+        setState(normalize(defaultState()));
+      } finally {
+        setLoaded(true);
+      }
+    })();
+  }, []);
+
+  /* save (debounced) */
+  useEffect(() => {
+    if (!loaded || !state) return;
+    clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(async () => {
+      try {
+        await window.storage.set(STORAGE_KEY, JSON.stringify({ ...state, updatedAt: new Date().toISOString() }));
+      } catch { /* in-memory only; export to be safe */ }
+    }, 500);
+  }, [state, loaded]);
+
+  const flash = (m) => { setToast(m); setTimeout(() => setToast(""), 1800); };
+  const patch = (fn) => setState((s) => { const n = structuredClone(s); fn(n); return n; });
+
+  if (!loaded || !state) {
+    return <div className="oxe-root"><Style /><div className="loadwrap">Loading distribution console…</div></div>;
+  }
+
+  const overdueCount = state.prospects.filter((p) => followUpState(p, state.cadence)?.kind === "overdue").length;
+  const pendingCount = state.prospects.filter((p) => p.emailApproval === "pending").length;
+
+  const tabs = [
+    ["dashboard", "Dashboard"],
+    ["pipeline", "Pipeline"],
+    ["logic", "Scoring logic"],
+    ["outreach", "Outreach & reminders"],
+    ["approvals", `Approvals${pendingCount ? ` (${pendingCount})` : ""}`],
+    ["markets", "Regions"],
+  ];
+
+  return (
+    <div className="oxe-root">
+      <Style />
+      <header className="topbar">
+        <div className="brand">
+          <span className="brandMark">CV</span>
+          <div>
+            <div className="brandTitle">Distribution Builder</div>
+            <div className="brandSub">{state.distributor} · global distributor for <b>OxeFit</b></div>
+          </div>
+        </div>
+        <div className="topActions">
+          {overdueCount > 0 && (
+            <button className="alertPill" onClick={() => setTab("outreach")}>
+              <span className="dot" /> {overdueCount} follow-up{overdueCount > 1 ? "s" : ""} overdue
+            </button>
+          )}
+          <button className={`adminToggle ${admin ? "on" : ""}`} onClick={() => setAdmin((a) => !a)} title="Admin can approve emails for sending">
+            <span className="adminDot" /> Admin {admin ? "on" : "off"}
+          </button>
+          <ExportMenu state={state} flash={flash} setState={setState} />
+        </div>
+      </header>
+
+      <nav className="tabs">
+        {tabs.map(([k, label]) => (
+          <button key={k} className={`tab ${tab === k ? "on" : ""}`} onClick={() => setTab(k)}>{label}</button>
+        ))}
+      </nav>
+
+      <main className="main">
+        {tab === "dashboard" && <Dashboard state={state} setTab={setTab} />}
+        {tab === "pipeline" && <Pipeline state={state} patch={patch} flash={flash} setState={setState} admin={admin} />}
+        {tab === "logic" && <Logic state={state} patch={patch} />}
+        {tab === "outreach" && <Outreach state={state} patch={patch} flash={flash} />}
+        {tab === "approvals" && <Approvals state={state} patch={patch} flash={flash} admin={admin} setAdmin={setAdmin} />}
+        {tab === "markets" && <Markets state={state} patch={patch} />}
+      </main>
+
+      {toast && <div className="toast">{toast}</div>}
+    </div>
+  );
+}
+
+/* ============================== DASHBOARD ============================== */
+function Dashboard({ state, setTab }) {
+  const P = state.prospects;
+  const scored = P.map((p) => ({ ...p, _s: weightedScore(p, state.criteria), _fu: followUpState(p, state.cadence) }));
+  const avg = scored.length ? Math.round(scored.reduce((a, b) => a + b._s, 0) / scored.length) : 0;
+  const countries = [...new Set(P.map((p) => p.country).filter(Boolean))];
+  const prime = scored.filter((p) => p._s >= 60).length;
+  const inOutreach = P.filter((p) => ACTIVE_OUTREACH.includes(p.status)).length;
+  const pending = P.filter((p) => p.emailApproval === "pending").length;
+  const overdue = scored.filter((p) => p._fu?.kind === "overdue").length;
+
+  const statusCounts = Object.keys(STATUS).reduce((m, k) => { m[k] = P.filter((p) => p.status === k).length; return m; }, {});
+  const byCountry = countries.map((c) => {
+    const rows = scored.filter((p) => p.country === c);
+    return {
+      country: c, region: rows[0]?.region || "", n: rows.length,
+      avg: Math.round(rows.reduce((a, b) => a + b._s, 0) / rows.length),
+      statuses: Object.keys(STATUS).reduce((m, k) => { m[k] = rows.filter((p) => p.status === k).length; return m; }, {}),
+    };
+  }).sort((a, b) => b.n - a.n || b.avg - a.avg);
+  const withComp = scored.filter((p) => competitorHit(p).length);
+  const conflicts = scored.filter(hasConflict);
+  const drivers = state.criteria.map((c) => ({ label: c.label, n: P.filter((p) => (p.scores?.[c.id] ?? 0) >= 4).length }))
+    .sort((a, b) => b.n - a.n).slice(0, 6);
+  const untapped = scored.filter((p) => p.status === "new").sort((a, b) => b._s - a._s).slice(0, 5);
+
+  if (!P.length) {
+    return <div className="empty"><div className="emptyTitle">No prospects yet.</div><div className="emptyText">Load a set from the Data menu, then come back for the overview.</div></div>;
+  }
+
+  return (
+    <div className="dash">
+      <div className="kpiRow">
+        <Kpi label="Distributors" value={P.length} onClick={() => setTab("pipeline")} />
+        <Kpi label="Countries" value={countries.length} />
+        <Kpi label="Avg fit" value={avg} suffix="%" color={scoreBand(avg).color} />
+        <Kpi label="Strong+ (≥60)" value={prime} color="var(--green)" />
+        <Kpi label="In outreach" value={inOutreach} color="var(--cyan)" onClick={() => setTab("outreach")} />
+        <Kpi label="Pending approval" value={pending} color="var(--accent)" onClick={() => setTab("approvals")} />
+      </div>
+      {overdue > 0 && <div className="dashAlert" onClick={() => setTab("outreach")}><span className="dot" /> {overdue} follow-up{overdue > 1 ? "s" : ""} overdue — open the worklist</div>}
+
+      <div className="dashGrid">
+        <section className="card dashWide">
+          <h3>Distributors by country</h3>
+          <table className="grid dashTable">
+            <thead><tr><th>Country</th><th>Region</th><th className="num">#</th><th className="num">Avg fit</th><th>Status mix</th></tr></thead>
+            <tbody>
+              {byCountry.map((r) => (
+                <tr key={r.country}>
+                  <td><b>{r.country}</b></td>
+                  <td className="muted">{r.region}</td>
+                  <td className="num">{r.n}</td>
+                  <td className="num"><Meter value={r.avg} color={scoreBand(r.avg).color} /></td>
+                  <td><StatusMini counts={r.statuses} /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+
+        <section className="card">
+          <h3>Pipeline status</h3>
+          {Object.entries(STATUS).map(([k, v]) => {
+            const n = statusCounts[k]; const pct = P.length ? Math.round((n / P.length) * 100) : 0;
+            return (
+              <div className="barRow" key={k}>
+                <span className="barLabel" style={{ color: v.color }}>{v.label}</span>
+                <div className="barTrack"><div className="barFill" style={{ width: `${pct}%`, background: v.color }} /></div>
+                <span className="barNum">{n}</span>
+              </div>
+            );
+          })}
+        </section>
+
+        <section className="card dashWide">
+          <h3>Competitor exposure <span className="muted small">— who already carries an OxeFit rival</span></h3>
+          <div className="compStat">
+            <div><div className="compBig" style={{ color: "var(--red)" }}>{conflicts.length}</div><div className="muted small">flagged CONFLICT (Technogym / Life Fitness family)</div></div>
+            <div><div className="compBig" style={{ color: "var(--accent)" }}>{withComp.length}</div><div className="muted small">carry a premium-connected brand (channel proven)</div></div>
+          </div>
+          <ul className="compList">
+            {withComp.slice(0, 8).map((p) => (
+              <li key={p.id} className="compItem">
+                <span className={hasConflict(p) ? "compFlag conflict" : "compFlag"}>{hasConflict(p) ? "CONFLICT" : "carries"}</span>
+                <b>{p.name}</b> <span className="muted small">{p.country}</span>
+                <span className="compBrands">{competitorHit(p).join(", ")}</span>
+              </li>
+            ))}
+          </ul>
+          <p className="finePrint">Speediance watch: OxeFit's closest connected rival sells mostly direct + a new reseller program (warehouses incl. 2 in the Middle East). Not yet through these distributors — a window to lock channel first.</p>
+        </section>
+
+        <section className="card">
+          <h3>OxeFit fit drivers <span className="muted small">— pipeline strengths</span></h3>
+          {drivers.map((d) => (
+            <div className="barRow" key={d.label}>
+              <span className="barLabel">{d.label}</span>
+              <div className="barTrack"><div className="barFill" style={{ width: `${P.length ? (d.n / P.length) * 100 : 0}%`, background: "var(--cyan)" }} /></div>
+              <span className="barNum">{d.n}</span>
+            </div>
+          ))}
+        </section>
+
+        <section className="card dashWide">
+          <h3>Top untapped opportunities <span className="muted small">— highest fit, not yet contacted</span></h3>
+          {untapped.length === 0 ? <div className="miniEmpty">Everyone's been contacted.</div> : (
+            <ul className="oppList">
+              {untapped.map((p, i) => (
+                <li key={p.id} className="oppItem" onClick={() => setTab("pipeline")}>
+                  <span className="oppRank">{i + 1}</span>
+                  <div className="oppMain"><b>{p.name}</b><span className="muted small">{p.country} · {p.type}{p.decisionMaker ? ` · ${p.decisionMaker}` : ""}</span></div>
+                  <Meter value={p._s} color={scoreBand(p._s).color} />
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      </div>
+    </div>
+  );
+}
+function Kpi({ label, value, suffix, color, onClick }) {
+  return (
+    <div className={`kpi ${onClick ? "click" : ""}`} onClick={onClick}>
+      <div className="kpiVal" style={color ? { color } : undefined}>{value}{suffix || ""}</div>
+      <div className="kpiLabel">{label}</div>
+    </div>
+  );
+}
+function StatusMini({ counts }) {
+  const items = Object.entries(STATUS).filter(([k]) => counts[k] > 0);
+  if (!items.length) return <span className="muted small">—</span>;
+  return <span className="statusMini">{items.map(([k, v]) => <span key={k} className="smChip" style={{ color: v.color, borderColor: v.color }}>{counts[k]} {v.label}</span>)}</span>;
+}
+
+/* ============================== PIPELINE ============================== */
+function Pipeline({ state, patch, flash, setState, admin }) {
+  const [fRegion, setFRegion] = useState("all");
+  const [fType, setFType] = useState("all");
+  const [fStatus, setFStatus] = useState("all");
+  const [open, setOpen] = useState(null); // prospect id in drawer
+  const [adding, setAdding] = useState(false);
+
+  const ranked = useMemo(() => {
+    return state.prospects
+      .map((p) => ({ ...p, _score: weightedScore(p, state.criteria), _fu: followUpState(p, state.cadence) }))
+      .filter((p) => fRegion === "all" || p.region === fRegion)
+      .filter((p) => fType === "all" || p.type === fType)
+      .filter((p) => fStatus === "all" || p.status === fStatus)
+      .sort((a, b) => b._score - a._score);
+  }, [state, fRegion, fType, fStatus]);
+
+  const top10 = ranked.slice(0, 10);
+
+  return (
+    <div>
+      <div className="bar">
+        <div className="filters">
+          <Select value={fRegion} onChange={setFRegion} options={[["all", "All regions"], ...state.regions.map((r) => [r.name, r.name])]} />
+          <Select value={fType} onChange={setFType} options={[["all", "All types"], ["Distributor", "Distributor"], ["Dealer", "Dealer"], ["Reseller", "Reseller"]]} />
+          <Select value={fStatus} onChange={setFStatus} options={[["all", "All status"], ...Object.entries(STATUS).map(([k, v]) => [k, v.label])]} />
+        </div>
+        <button className="btn primary" onClick={() => setAdding(true)}>+ Add prospect</button>
+      </div>
+
+      <div className="legend">
+        Ranked by weighted fit score · top 10 highlighted · {ranked.length} shown
+      </div>
+
+      {ranked.length === 0 ? (
+        <Empty onAdd={() => setAdding(true)} />
+      ) : (
+        <div className="tablewrap">
+          <table className="grid">
+            <thead>
+              <tr>
+                <th className="num">#</th>
+                <th>Company</th>
+                <th>Country</th>
+                <th>Type</th>
+                <th className="num">Fit</th>
+                <th>Status</th>
+                <th>Follow-up</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {ranked.map((p, i) => {
+                const band = scoreBand(p._score);
+                const isTop = i < 10;
+                return (
+                  <tr key={p.id} className={isTop ? "toprow" : ""} onClick={() => setOpen(p.id)}>
+                    <td className="num rank">{i + 1}</td>
+                    <td>
+                      <div className="coName">{p.name}</div>
+                      <div className="coSub">
+                        {p.decisionMaker ? p.decisionMaker : <span className="muted">— add decision-maker</span>}
+                        {p.linkedIn && <a className="liMini" href={p.linkedIn} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>in↗</a>}
+                      </div>
+                    </td>
+                    <td>{p.country || "—"}</td>
+                    <td><span className="typeTag">{p.type}</span></td>
+                    <td className="num">
+                      <Meter value={p._score} color={band.color} />
+                    </td>
+                    <td><StatusBadge status={p.status} /></td>
+                    <td>{p._fu ? <FollowUpBadge fu={p._fu} /> : <span className="muted">—</span>}</td>
+                    <td className="chev">›</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {open && (
+        <Drawer
+          prospect={state.prospects.find((p) => p.id === open)}
+          state={state}
+          patch={patch}
+          flash={flash}
+          admin={admin}
+          onClose={() => setOpen(null)}
+          onDelete={() => { setState((s) => ({ ...s, prospects: s.prospects.filter((x) => x.id !== open) })); setOpen(null); }}
+        />
+      )}
+      {adding && (
+        <AddProspect
+          state={state}
+          onClose={() => setAdding(false)}
+          onAdd={(p) => { setState((s) => ({ ...s, prospects: [...s.prospects, p] })); setAdding(false); flash("Prospect added"); }}
+        />
+      )}
+    </div>
+  );
+}
+
+function Empty({ onAdd }) {
+  return (
+    <div className="empty">
+      <div className="emptyTitle">No prospects match these filters.</div>
+      <div className="emptyText">Add a distributor, dealer, or reseller — or clear the filters to see everyone.</div>
+      <button className="btn primary" onClick={onAdd}>+ Add your first prospect</button>
+    </div>
+  );
+}
+
+function Meter({ value, color }) {
+  return (
+    <div className="meter" title={`${value}/100`}>
+      <div className="meterFill" style={{ width: `${value}%`, background: color }} />
+      <span className="meterVal" style={{ color }}>{value}</span>
+    </div>
+  );
+}
+function StatusBadge({ status }) {
+  const s = STATUS[status] || STATUS.new;
+  return <span className="statusBadge" style={{ color: s.color, borderColor: s.color }}>{s.label}</span>;
+}
+function FollowUpBadge({ fu }) {
+  const map = { overdue: "var(--red)", soon: "var(--accent)", scheduled: "var(--muted)" };
+  const txt = fu.kind === "overdue" ? `Overdue ${fu.days}d` : fu.kind === "soon" ? (fu.days === 0 ? "Due today" : `Due in ${fu.days}d`) : `Due ${fu.due}`;
+  return <span className="fuBadge" style={{ color: map[fu.kind] }}>{fu.kind === "overdue" && <span className="dot" />}{txt}</span>;
+}
+
+/* ============================== DRAWER ============================== */
+function Drawer({ prospect, state, patch, flash, onClose, onDelete, admin }) {
+  const [view, setView] = useState("score"); // score | email
+  if (!prospect) return null;
+  const score = weightedScore(prospect, state.criteria);
+  const band = scoreBand(score);
+
+  const setScore = (cid, val) => patch((n) => {
+    const p = n.prospects.find((x) => x.id === prospect.id);
+    p.scores = { ...p.scores, [cid]: val };
+  });
+  const setField = (field, val) => patch((n) => {
+    const p = n.prospects.find((x) => x.id === prospect.id);
+    p[field] = val;
+  });
+  const setApproval = (val) => setField("emailApproval", val);
+
+  // logs an actual send: advances communication status + follow-up timer + approval=sent
+  const logSent = () => patch((n) => {
+    const p = n.prospects.find((x) => x.id === prospect.id);
+    p.lastContacted = todayISO();
+    p.contactCount = (p.contactCount || 0) + 1;
+    p.status = p.status === "email_shared" ? "follow_up" : "email_shared";
+    p.emailApproval = "sent";
+  });
+
+  const ctx = {
+    contactName: prospect.contactName || "there",
+    company: prospect.name,
+    country: prospect.country || "your market",
+    distributor: state.distributor,
+    senderName: state.senderName || "[your name]",
+  };
+  const subject = fillTemplate(state.emailTemplate.subject, ctx);
+  const body = fillTemplate(state.emailTemplate.body, ctx);
+  const to = prospect.contactEmail || "";
+  const outlookUrl = outlookCompose({ to, subject, body });
+  const approval = prospect.emailApproval || "none";
+
+  const copy = async (text, label) => {
+    try { await navigator.clipboard.writeText(text); flash(`${label} copied`); }
+    catch { flash("Copy blocked — select & copy manually"); }
+  };
+  const downloadEml = () => {
+    const blob = new Blob([buildEml({ to, subject, body })], { type: "message/rfc822" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `${prospect.name.replace(/[^\w]+/g, "_")}.eml`; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div className="drawerScrim" onClick={onClose}>
+      <aside className="drawer" onClick={(e) => e.stopPropagation()}>
+        <div className="drawerHead">
+          <div>
+            <input className="drawerName" value={prospect.name} onChange={(e) => setField("name", e.target.value)} />
+            <div className="drawerMeta">
+              <span className="typeTag">{prospect.type}</span>
+              <span>{prospect.country || "—"} · {prospect.region || "—"}</span>
+            </div>
+          </div>
+          <button className="iconBtn" onClick={onClose}>✕</button>
+        </div>
+
+        <div className="scoreHero">
+          <div className="scoreBig" style={{ color: band.color }}>{score}</div>
+          <div>
+            <div className="scoreBand" style={{ color: band.color }}>{band.label} fit</div>
+            <div className="muted small">weighted across {state.criteria.length} criteria</div>
+          </div>
+        </div>
+
+        <div className="segmented">
+          <button className={view === "score" ? "on" : ""} onClick={() => setView("score")}>Score & details</button>
+          <button className={view === "email" ? "on" : ""} onClick={() => setView("email")}>Outreach email</button>
+        </div>
+
+        {view === "score" ? (
+          <div className="drawerBody">
+            <div className="fieldRow2">
+              <Field label="Decision-maker / CEO" value={prospect.decisionMaker} onChange={(v) => setField("decisionMaker", v)} />
+              <Field label="LinkedIn profile URL" value={prospect.linkedIn} onChange={(v) => setField("linkedIn", v)} />
+            </div>
+            {prospect.linkedIn && (
+              <a className="liLink" href={prospect.linkedIn} target="_blank" rel="noreferrer">↗ Open LinkedIn profile</a>
+            )}
+            <FieldArea label="Competitor brands carried" value={prospect.competitors} onChange={(v) => setField("competitors", v)} rows={2} />
+            {competitorHit(prospect).length > 0 && (
+              <div className={hasConflict(prospect) ? "compNote conflict" : "compNote"}>
+                {hasConflict(prospect) ? "⚠ Aligned to a direct competitor — " : "✓ Premium-connected channel proven — "}
+                {competitorHit(prospect).join(", ")}
+              </div>
+            )}
+            <div className="fieldRow2">
+              <Field label="Contact name" value={prospect.contactName} onChange={(v) => setField("contactName", v)} />
+              <Field label="Contact email" value={prospect.contactEmail} onChange={(v) => setField("contactEmail", v)} />
+            </div>
+            <div className="fieldRow2">
+              <Field label="Website" value={prospect.website} onChange={(v) => setField("website", v)} />
+              <SelectField label="Type" value={prospect.type} onChange={(v) => setField("type", v)} options={["Distributor", "Dealer", "Reseller"]} />
+            </div>
+            <FieldArea label="Notes" value={prospect.notes} onChange={(v) => setField("notes", v)} />
+
+            <div className="sectionLabel">Criteria scores (0–5)</div>
+            {state.criteria.map((c) => (
+              <div className="scoreRow" key={c.id}>
+                <div className="scoreRowLabel">
+                  {c.label}
+                  <span className="wTag">×{c.weight}</span>
+                  {c.hint && <span className="hint">{c.hint}</span>}
+                </div>
+                <div className="scoreDots">
+                  {[0, 1, 2, 3, 4, 5].map((v) => (
+                    <button key={v} className={`dotBtn ${(prospect.scores?.[c.id] ?? 0) === v ? "on" : ""}`} onClick={() => setScore(c.id, v)}>{v}</button>
+                  ))}
+                </div>
+              </div>
+            ))}
+            <button className="btn ghost danger" onClick={onDelete}>Delete prospect</button>
+          </div>
+        ) : (
+          <div className="drawerBody">
+            <div className="outreachStat">
+              <div><span className="muted">Status</span><StatusBadge status={prospect.status} /></div>
+              <div><span className="muted">Contacts</span><b>{prospect.contactCount || 0}</b></div>
+              <div><span className="muted">Last</span><b>{prospect.lastContacted || "—"}</b></div>
+            </div>
+            <SelectField label="Update status" value={prospect.status} onChange={(v) => setField("status", v)} options={Object.keys(STATUS)} render={(k) => STATUS[k].label} />
+
+            <div className="sectionLabel">Approval & send</div>
+            <div className="approvalRow">
+              <span className="apprBadge" style={{ color: APPROVAL[approval].color, borderColor: APPROVAL[approval].color }}>{APPROVAL[approval].label}</span>
+              {!to && <span className="muted small">⚠ add a contact email to enable Outlook send</span>}
+            </div>
+
+            {/* workflow gate */}
+            {approval === "none" || approval === "rejected" ? (
+              <button className="btn primary full" onClick={() => { setApproval("pending"); flash("Submitted for admin approval"); }}>Submit for approval</button>
+            ) : approval === "pending" ? (
+              admin ? (
+                <div className="mailActions">
+                  <button className="btn ghost danger" onClick={() => { setApproval("rejected"); flash("Rejected"); }}>Reject</button>
+                  <button className="btn primary" onClick={() => { setApproval("approved"); flash("Approved to send"); }}>Approve</button>
+                </div>
+              ) : (
+                <p className="finePrint">Waiting for an admin to approve this email. Toggle <b>Admin</b> in the header (or ask your admin) to review it.</p>
+              )
+            ) : approval === "approved" ? (
+              <div className="mailActions">
+                <button className="btn ghost" onClick={downloadEml} disabled={!to}>Download .eml</button>
+                <a className={`btn primary ${!to ? "disabledLink" : ""}`} href={to ? outlookUrl : undefined} target="_blank" rel="noreferrer" onClick={() => to && logSent()}>Send via Outlook & log</a>
+              </div>
+            ) : (
+              <p className="finePrint">Sent on {prospect.lastContacted}. Follow-up is now on the cadence timer. Re-submit if you want to send again.</p>
+            )}
+
+            <div className="sectionLabel">Draft preview</div>
+            <div className="mailField"><span className="muted small">To</span><div className="mailSubject">{to || "—"}</div></div>
+            <div className="mailField"><span className="muted small">Subject</span><div className="mailSubject">{subject}</div></div>
+            <pre className="mailBody">{body}</pre>
+            <div className="mailActions">
+              <button className="btn ghost" onClick={() => copy(`${subject}\n\n${body}`, "Email")}>Copy email</button>
+              <button className="btn ghost danger" onClick={onDelete}>Delete prospect</button>
+            </div>
+            <p className="finePrint">
+              "Send via Outlook" opens a pre-filled draft in Outlook on the web — you (or whoever's signed in) review and press send there. Nothing is sent automatically. Approvals gate which drafts reach that step.
+            </p>
+          </div>
+        )}
+      </aside>
+    </div>
+  );
+}
+
+/* ============================== ADD PROSPECT ============================== */
+function AddProspect({ state, onClose, onAdd }) {
+  const firstRegion = state.regions[0];
+  const [f, setF] = useState({
+    name: "", type: "Distributor", region: firstRegion?.name || "",
+    country: firstRegion?.countries?.[0] || "", website: "", decisionMaker: "", linkedIn: "",
+    competitors: "", contactName: "", contactEmail: "", notes: "",
+  });
+  const set = (k, v) => setF((s) => ({ ...s, [k]: v }));
+  const countries = state.regions.find((r) => r.name === f.region)?.countries || [];
+  const submit = () => {
+    if (!f.name.trim()) return;
+    const scores = Object.fromEntries(state.criteria.map((c) => [c.id, 0]));
+    onAdd({ id: uid(), ...f, scores, status: "new", lastContacted: null, contactCount: 0, emailApproval: "none" });
+  };
+  return (
+    <div className="drawerScrim" onClick={onClose}>
+      <aside className="drawer" onClick={(e) => e.stopPropagation()}>
+        <div className="drawerHead">
+          <div className="drawerName-static">Add prospect</div>
+          <button className="iconBtn" onClick={onClose}>✕</button>
+        </div>
+        <div className="drawerBody">
+          <Field label="Company name" value={f.name} onChange={(v) => set("name", v)} autoFocus />
+          <div className="fieldRow2">
+            <SelectField label="Type" value={f.type} onChange={(v) => set("type", v)} options={["Distributor", "Dealer", "Reseller"]} />
+            <SelectField label="Region" value={f.region} onChange={(v) => { set("region", v); const cs = state.regions.find((r) => r.name === v)?.countries || []; set("country", cs[0] || ""); }} options={state.regions.map((r) => r.name)} />
+          </div>
+          <div className="fieldRow2">
+            <SelectField label="Country" value={f.country} onChange={(v) => set("country", v)} options={countries} />
+            <Field label="Website" value={f.website} onChange={(v) => set("website", v)} />
+          </div>
+          <div className="fieldRow2">
+            <Field label="Decision-maker / CEO" value={f.decisionMaker} onChange={(v) => set("decisionMaker", v)} />
+            <Field label="LinkedIn profile URL" value={f.linkedIn} onChange={(v) => set("linkedIn", v)} />
+          </div>
+          <Field label="Competitor brands carried (Technogym, Life Fitness, Speediance…)" value={f.competitors} onChange={(v) => set("competitors", v)} />
+          <div className="fieldRow2">
+            <Field label="Contact name" value={f.contactName} onChange={(v) => set("contactName", v)} />
+            <Field label="Contact email" value={f.contactEmail} onChange={(v) => set("contactEmail", v)} />
+          </div>
+          <FieldArea label="Notes" value={f.notes} onChange={(v) => set("notes", v)} />
+          <div className="mailActions">
+            <button className="btn ghost" onClick={onClose}>Cancel</button>
+            <button className="btn primary" onClick={submit}>Add to pipeline</button>
+          </div>
+          <p className="finePrint">Score it next from the pipeline so it ranks against the rest.</p>
+        </div>
+      </aside>
+    </div>
+  );
+}
+
+/* ============================== SCORING LOGIC ============================== */
+function Logic({ state, patch }) {
+  const totalW = state.criteria.reduce((s, c) => s + (Number(c.weight) || 0), 0);
+  const add = () => patch((n) => n.criteria.push({ id: uid(), label: "New criterion", weight: 3, hint: "" }));
+  const setC = (id, k, v) => patch((n) => { const c = n.criteria.find((x) => x.id === id); c[k] = v; });
+  const del = (id) => patch((n) => {
+    n.criteria = n.criteria.filter((x) => x.id !== id);
+    n.prospects.forEach((p) => { if (p.scores) delete p.scores[id]; });
+  });
+  return (
+    <div>
+      <div className="panelIntro">
+        <h2>Scoring logic</h2>
+        <p>This is the engine that ranks every prospect. Weight reflects how much each factor matters for OxeFit specifically — connected hardware on a subscription means <b>service capability</b> and <b>premium channel fit</b> carry the most. Edit freely; rankings recompute instantly.</p>
+      </div>
+      <div className="logicList">
+        {state.criteria.map((c) => (
+          <div className="logicRow" key={c.id}>
+            <div className="logicMain">
+              <input className="logicLabel" value={c.label} onChange={(e) => setC(c.id, "label", e.target.value)} />
+              <input className="logicHint" placeholder="what good looks like…" value={c.hint} onChange={(e) => setC(c.id, "hint", e.target.value)} />
+            </div>
+            <div className="weightCtl">
+              <span className="muted small">weight</span>
+              <input type="range" min="1" max="5" value={c.weight} onChange={(e) => setC(c.id, "weight", Number(e.target.value))} />
+              <span className="weightNum">{c.weight}</span>
+            </div>
+            <button className="iconBtn" onClick={() => del(c.id)}>✕</button>
+          </div>
+        ))}
+      </div>
+      <div className="bar">
+        <div className="muted small">Total weight: {totalW} · scores normalize to 0–100 regardless of total</div>
+        <button className="btn ghost" onClick={add}>+ Add criterion</button>
+      </div>
+    </div>
+  );
+}
+
+/* ============================== OUTREACH & REMINDERS ============================== */
+function Outreach({ state, patch, flash }) {
+  const due = state.prospects
+    .map((p) => ({ ...p, _fu: followUpState(p, state.cadence) }))
+    .filter((p) => p._fu)
+    .sort((a, b) => new Date(a._fu.due) - new Date(b._fu.due));
+
+  const setCadence = (i, v) => patch((n) => { n.cadence[i] = Math.max(0, Number(v) || 0); });
+  const addStep = () => patch((n) => n.cadence.push((n.cadence[n.cadence.length - 1] || 0) + 7));
+  const delStep = (i) => patch((n) => { if (n.cadence.length > 1) n.cadence.splice(i, 1); });
+  const setTpl = (k, v) => patch((n) => { n.emailTemplate[k] = v; });
+  const setSender = (v) => patch((n) => { n.senderName = v; });
+
+  const markContacted = (id) => patch((n) => {
+    const p = n.prospects.find((x) => x.id === id);
+    p.lastContacted = todayISO();
+    p.contactCount = (p.contactCount || 0) + 1;
+    flash("Logged — follow-up rescheduled");
+  });
+
+  return (
+    <div className="outreachGrid">
+      <section className="card">
+        <h3>Follow-up worklist</h3>
+        <p className="muted small">Every prospect mid-outreach with a due or overdue nudge, soonest first. This is your reminder queue each time you open the console.</p>
+        {due.length === 0 ? (
+          <div className="miniEmpty">Nothing due. Log a contact on a prospect to start its timer.</div>
+        ) : (
+          <ul className="dueList">
+            {due.map((p) => (
+              <li key={p.id} className="dueItem">
+                <div>
+                  <div className="dueName">{p.name}</div>
+                  <div className="muted small">{p.country} · contact #{(p.contactCount || 0) + 1} · {p.contactEmail || "no email"}</div>
+                </div>
+                <div className="dueRight">
+                  <FollowUpBadge fu={p._fu} />
+                  <button className="btn ghost small" onClick={() => markContacted(p.id)}>Mark contacted</button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <section className="card">
+        <h3>Reminder cadence</h3>
+        <p className="muted small">Days after the previous contact before the next nudge is due. Step 1 = first touch, then each follow-up.</p>
+        <div className="cadenceRow">
+          {state.cadence.map((d, i) => (
+            <div className="cadenceChip" key={i}>
+              <span className="muted small">#{i + 1}</span>
+              <input type="number" min="0" value={d} onChange={(e) => setCadence(i, e.target.value)} />
+              <span className="muted small">d</span>
+              {state.cadence.length > 1 && <button className="xMini" onClick={() => delStep(i)}>✕</button>}
+            </div>
+          ))}
+          <button className="btn ghost small" onClick={addStep}>+ step</button>
+        </div>
+      </section>
+
+      <section className="card">
+        <h3>Email template</h3>
+        <p className="muted small">Merge fields fill per prospect: <code>{"{{contactName}}"}</code> <code>{"{{company}}"}</code> <code>{"{{country}}"}</code> <code>{"{{distributor}}"}</code> <code>{"{{senderName}}"}</code>.</p>
+        <Field label="Your name (sender)" value={state.senderName} onChange={setSender} />
+        <Field label="Subject" value={state.emailTemplate.subject} onChange={(v) => setTpl("subject", v)} />
+        <FieldArea label="Body" value={state.emailTemplate.body} onChange={(v) => setTpl("body", v)} rows={12} />
+      </section>
+
+      <section className="card sending">
+        <h3>About automated sending</h3>
+        <p className="muted small">
+          This console drafts and tracks; it doesn't fire emails on its own. Inside a chat artifact there's no inbox connection and no background scheduler, and auto-sending on your behalf isn't something done without you approving each message. Two clean ways to close that loop:
+        </p>
+        <ul className="howList">
+          <li><b>Manual + tracked (now):</b> open each draft in your mail client, send, log it — the worklist then reminds you exactly when to follow up.</li>
+          <li><b>Connected (next):</b> wire your mailbox via an email connector or a small backend with a scheduler; you (or an approval step) still confirm sends. Export below feeds that pipeline.</li>
+        </ul>
+      </section>
+    </div>
+  );
+}
+
+/* ============================== APPROVALS ============================== */
+function Approvals({ state, patch, flash, admin, setAdmin }) {
+  const pending = state.prospects.filter((p) => p.emailApproval === "pending");
+  const approved = state.prospects.filter((p) => p.emailApproval === "approved");
+  const sent = state.prospects.filter((p) => p.emailApproval === "sent");
+
+  const setApproval = (id, val, msg) => { patch((n) => { n.prospects.find((x) => x.id === id).emailApproval = val; }); flash(msg); };
+  const draftFor = (p) => {
+    const ctx = { contactName: p.contactName || "there", company: p.name, country: p.country || "your market", distributor: state.distributor, senderName: state.senderName || "[your name]" };
+    return { to: p.contactEmail || "", subject: fillTemplate(state.emailTemplate.subject, ctx), body: fillTemplate(state.emailTemplate.body, ctx) };
+  };
+  const sendLog = (id) => patch((n) => {
+    const p = n.prospects.find((x) => x.id === id);
+    p.lastContacted = todayISO(); p.contactCount = (p.contactCount || 0) + 1;
+    p.status = p.status === "email_shared" ? "follow_up" : "email_shared"; p.emailApproval = "sent";
+  });
+
+  return (
+    <div>
+      <div className="panelIntro">
+        <h2>Email approvals</h2>
+        <p>The admin gate for outreach. Drafts submitted from a prospect's <b>Outreach email</b> tab land here. An admin approves, then anyone can open the approved draft in <b>Microsoft Outlook</b> to review and send. Nothing leaves automatically.</p>
+      </div>
+
+      {!admin && (
+        <div className="adminCallout">
+          You're in viewer mode — you can submit drafts but not approve them.
+          <button className="btn ghost small" onClick={() => setAdmin(true)}>Switch to admin</button>
+        </div>
+      )}
+
+      <div className="sectionLabel">Pending approval ({pending.length})</div>
+      {pending.length === 0 ? <div className="miniEmpty">No drafts waiting. Submit one from a prospect's Outreach email tab.</div> : (
+        <ul className="apprList">
+          {pending.map((p) => {
+            const d = draftFor(p);
+            return (
+              <li key={p.id} className="apprItem">
+                <div className="apprMain">
+                  <div className="dueName">{p.name} <span className="muted small">· {p.country}</span></div>
+                  <div className="muted small">{d.to || "⚠ no email"} · {d.subject}</div>
+                </div>
+                <div className="dueRight">
+                  {admin ? (
+                    <>
+                      <button className="btn ghost small danger" onClick={() => setApproval(p.id, "rejected", "Rejected")}>Reject</button>
+                      <button className="btn primary small" onClick={() => setApproval(p.id, "approved", "Approved")}>Approve</button>
+                    </>
+                  ) : <span className="apprBadge" style={{ color: "var(--citron)", borderColor: "var(--citron)" }}>Pending</span>}
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      <div className="sectionLabel">Approved — ready to send ({approved.length})</div>
+      {approved.length === 0 ? <div className="miniEmpty">Nothing approved yet.</div> : (
+        <ul className="apprList">
+          {approved.map((p) => {
+            const d = draftFor(p);
+            return (
+              <li key={p.id} className="apprItem">
+                <div className="apprMain">
+                  <div className="dueName">{p.name} <span className="muted small">· {p.country}</span></div>
+                  <div className="muted small">{d.to || "⚠ add email"} · {d.subject}</div>
+                </div>
+                <div className="dueRight">
+                  <a className={`btn primary small ${!d.to ? "disabledLink" : ""}`} href={d.to ? outlookCompose(d) : undefined} target="_blank" rel="noreferrer" onClick={() => d.to && sendLog(p.id)}>Send via Outlook</a>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      {sent.length > 0 && (
+        <>
+          <div className="sectionLabel">Sent ({sent.length})</div>
+          <ul className="apprList">
+            {sent.map((p) => (
+              <li key={p.id} className="apprItem sentItem">
+                <div className="apprMain"><div className="dueName">{p.name}</div><div className="muted small">sent {p.lastContacted} · {p.country}</div></div>
+                <span className="apprBadge" style={{ color: "var(--cyan)", borderColor: "var(--cyan)" }}>Sent</span>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+
+      <p className="finePrint" style={{ marginTop: 18 }}>
+        Note on real role separation: this models the approval flow in one view. True admin-only control (where reps genuinely can't self-approve) needs accounts and server-side roles — that's the connected-backend step, alongside Microsoft 365 sign-in via Graph if you later want sends logged automatically. Even then, a person confirms each send.
+      </p>
+    </div>
+  );
+}
+
+/* ============================== MARKETS ============================== */
+function Markets({ state, patch }) {
+  const addRegion = () => patch((n) => n.regions.push({ id: uid(), name: "New region", countries: [] }));
+  const setRegion = (id, name) => patch((n) => { n.regions.find((r) => r.id === id).name = name; });
+  const delRegion = (id) => patch((n) => { n.regions = n.regions.filter((r) => r.id !== id); });
+  const addCountry = (id, val) => patch((n) => { const r = n.regions.find((x) => x.id === id); if (val.trim() && !r.countries.includes(val.trim())) r.countries.push(val.trim()); });
+  const delCountry = (id, c) => patch((n) => { const r = n.regions.find((x) => x.id === id); r.countries = r.countries.filter((x) => x !== c); });
+
+  return (
+    <div>
+      <div className="panelIntro">
+        <h2>Regions & countries</h2>
+        <p>Your target footprint for OxeFit. Build a per-country list here, then add prospects against each. Edit anything — pre-loaded with Middle East, Africa, CEE, APAC and Australia.</p>
+      </div>
+      {state.regions.map((r) => {
+        const count = state.prospects.filter((p) => p.region === r.name).length;
+        return (
+          <div className="regionCard" key={r.id}>
+            <div className="regionHead">
+              <input className="regionName" value={r.name} onChange={(e) => setRegion(r.id, e.target.value)} />
+              <span className="muted small">{r.countries.length} countries · {count} prospects</span>
+              <button className="iconBtn" onClick={() => delRegion(r.id)}>✕</button>
+            </div>
+            <div className="chips">
+              {r.countries.map((c) => {
+                const n = state.prospects.filter((p) => p.country === c && p.region === r.name).length;
+                return (
+                  <span className="countryChip" key={c}>
+                    {c}{n > 0 && <span className="chipCount">{n}</span>}
+                    <button className="xMini" onClick={() => delCountry(r.id, c)}>✕</button>
+                  </span>
+                );
+              })}
+              <CountryAdder onAdd={(v) => addCountry(r.id, v)} />
+            </div>
+          </div>
+        );
+      })}
+      <button className="btn ghost" onClick={addRegion}>+ Add region</button>
+    </div>
+  );
+}
+function CountryAdder({ onAdd }) {
+  const [v, setV] = useState("");
+  return (
+    <span className="countryAdd">
+      <input placeholder="+ country" value={v} onChange={(e) => setV(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Enter") { onAdd(v); setV(""); } }} />
+    </span>
+  );
+}
+
+/* ============================== EXPORT ============================== */
+function ExportMenu({ state, flash, setState }) {
+  const [open, setOpen] = useState(false);
+  const [importing, setImporting] = useState(false);
+
+  const dl = (content, name, type) => {
+    const blob = new Blob([content], { type });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = name; a.click();
+    URL.revokeObjectURL(url);
+    setOpen(false); flash("Exported");
+  };
+  // export in the same shape import expects (round-trips cleanly)
+  const csv = () => {
+    const head = ["name", "type", "region", "country", "website", "contactName", "contactEmail", "notes", "decisionMaker", "linkedIn", "competitors", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"];
+    const rows = state.prospects.map((p) => [
+      p.name, p.type, p.region, p.country, p.website || "", p.contactName || "", p.contactEmail || "", (p.notes || "").replace(/\n/g, " "),
+      p.decisionMaker || "", p.linkedIn || "", p.competitors || "",
+      ...state.criteria.slice(0, 8).map((c) => p.scores?.[c.id] ?? 0),
+    ]);
+    const esc = (v) => `"${String(v).replace(/"/g, '""')}"`;
+    dl([head, ...rows].map((r) => r.map(esc).join(",")).join("\n"), "oxefit-distribution.csv", "text/csv");
+  };
+  const reset = () => {
+    if (confirm("Reset all data to defaults? This clears your prospects.")) {
+      setState(defaultState()); setOpen(false); flash("Reset to defaults");
+    }
+  };
+  const loadStarter = () => {
+    setState((s) => {
+      const { merged, addedCount, skipped } = mergeProspects(s.prospects, starterProspects(s.criteria));
+      flash(addedCount ? `Loaded ${addedCount} prospect${addedCount > 1 ? "s" : ""}${skipped ? ` · ${skipped} already present` : ""}` : "Starter set already loaded");
+      return { ...s, prospects: merged };
+    });
+    setOpen(false);
+  };
+  const loadGlobal = () => {
+    setState((s) => {
+      const { merged, addedCount, skipped } = mergeProspects(s.prospects, globalProspects(s.criteria));
+      flash(addedCount ? `Loaded ${addedCount} prospect${addedCount > 1 ? "s" : ""}${skipped ? ` · ${skipped} already present` : ""}` : "Expansion set already loaded");
+      return { ...s, prospects: merged };
+    });
+    setOpen(false);
+  };
+  const doImport = (text) => {
+    let incoming = [];
+    const trimmed = text.trim();
+    try {
+      if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+        const parsed = JSON.parse(trimmed);
+        const arr = Array.isArray(parsed) ? parsed : parsed.prospects || [];
+        incoming = arr.map((p) => ({
+          id: uid(), name: p.name || "Unnamed", type: p.type || "Distributor",
+          region: p.region || "", country: p.country || "", website: p.website || "",
+          decisionMaker: p.decisionMaker || "", linkedIn: p.linkedIn || "",
+          competitors: p.competitors || COMPETITORS[p.name] || "",
+          contactName: p.contactName || "", contactEmail: p.contactEmail || "", notes: p.notes || "",
+          scores: p.scores && typeof p.scores === "object"
+            ? Object.fromEntries(state.criteria.map((c) => [c.id, Number(p.scores[c.id]) || 0]))
+            : Object.fromEntries(state.criteria.map((c) => [c.id, 0])),
+          status: p.status || "new", lastContacted: p.lastContacted || null, contactCount: p.contactCount || 0,
+          emailApproval: p.emailApproval || "none",
+        })).filter((p) => p.name !== "Unnamed");
+      } else {
+        incoming = rowsToProspects(parseCSV(trimmed), state.criteria);
+      }
+    } catch {
+      flash("Couldn't parse — check the format"); return;
+    }
+    if (!incoming.length) { flash("No rows found to import"); return; }
+    setState((s) => {
+      const { merged, addedCount, skipped } = mergeProspects(s.prospects, incoming);
+      flash(`Imported ${addedCount}${skipped ? ` · ${skipped} duplicate${skipped > 1 ? "s" : ""} skipped` : ""}`);
+      return { ...s, prospects: merged };
+    });
+    setImporting(false);
+  };
+
+  return (
+    <div className="exportWrap">
+      <button className="btn ghost" onClick={() => setOpen((o) => !o)}>Data ▾</button>
+      {open && (
+        <div className="menu" onMouseLeave={() => setOpen(false)}>
+          <button onClick={loadStarter}>★ Load Middle East set (UAE + KSA)</button>
+          <button onClick={loadGlobal}>★ Load expansion set (APAC · AU · Africa · CEE)</button>
+          <button onClick={() => { setImporting(true); setOpen(false); }}>Import CSV / JSON…</button>
+          <div className="menuSep" />
+          <button onClick={csv}>Download CSV</button>
+          <button onClick={() => dl(JSON.stringify(state, null, 2), "oxefit-distribution.json", "application/json")}>Download JSON (backup)</button>
+          <button className="menuDanger" onClick={reset}>Reset to defaults</button>
+        </div>
+      )}
+      {importing && <ImportModal onClose={() => setImporting(false)} onImport={doImport} />}
+    </div>
+  );
+}
+
+function ImportModal({ onClose, onImport }) {
+  const [text, setText] = useState("");
+  const onFile = (e) => {
+    const f = e.target.files?.[0]; if (!f) return;
+    const r = new FileReader();
+    r.onload = () => setText(String(r.result || ""));
+    r.readAsText(f);
+  };
+  return (
+    <div className="drawerScrim" style={{ justifyContent: "center", alignItems: "center" }} onClick={onClose}>
+      <div className="importCard" onClick={(e) => e.stopPropagation()}>
+        <div className="drawerHead">
+          <div className="drawerName-static">Import prospects</div>
+          <button className="iconBtn" onClick={onClose}>✕</button>
+        </div>
+        <div className="importBody">
+          <p className="muted small" style={{ marginTop: 0 }}>
+            Paste <b>CSV</b> or <b>JSON</b>, or choose a file. Existing prospects stay; duplicates (same company + country) are skipped.
+          </p>
+          <div className="csvHint">
+            CSV header: <code>name,type,region,country,website,contactName,contactEmail,notes,decisionMaker,linkedIn,competitors,s1…s8</code><br />
+            <span className="muted">s1–s8 are 0–5 scores in your criteria order — optional, leave blank for unscored. A downloaded CSV re-imports as-is.</span>
+          </div>
+          <input type="file" accept=".csv,.json,.txt" onChange={onFile} className="fileInput" />
+          <textarea className="importArea" rows={9} placeholder="Paste CSV or JSON here…" value={text} onChange={(e) => setText(e.target.value)} />
+          <div className="mailActions">
+            <button className="btn ghost" onClick={onClose}>Cancel</button>
+            <button className="btn primary" onClick={() => onImport(text)} disabled={!text.trim()}>Import</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================== SMALL UI ============================== */
+function Select({ value, onChange, options }) {
+  return (
+    <select className="select" value={value} onChange={(e) => onChange(e.target.value)}>
+      {options.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+    </select>
+  );
+}
+function Field({ label, value, onChange, autoFocus }) {
+  return (
+    <label className="field">
+      <span>{label}</span>
+      <input value={value || ""} autoFocus={autoFocus} onChange={(e) => onChange(e.target.value)} />
+    </label>
+  );
+}
+function FieldArea({ label, value, onChange, rows = 3 }) {
+  return (
+    <label className="field">
+      <span>{label}</span>
+      <textarea rows={rows} value={value || ""} onChange={(e) => onChange(e.target.value)} />
+    </label>
+  );
+}
+function SelectField({ label, value, onChange, options, render }) {
+  return (
+    <label className="field">
+      <span>{label}</span>
+      <select value={value} onChange={(e) => onChange(e.target.value)}>
+        {options.map((o) => <option key={o} value={o}>{render ? render(o) : o}</option>)}
+      </select>
+    </label>
+  );
+}
+
+/* ============================== STYLES ============================== */
+function Style() {
+  return (
+    <style>{`
+:root{
+  /* OxeFit approved palette */
+  --bg:#0a0e16; --panel:#0c1c34; --panel2:#13294a; --line:rgba(140,170,210,.16);
+  --ink:#eef3fb; --muted:#8aa0c0; --accent:#4a8cf7; --accent-dim:rgba(74,140,247,.16);
+  --hyper:#2a1fd0; --cyan:#7ed6ff; --green:#34bd9c; --mint:#92e0ab;
+  --red:#f0481e; --red-soft:#f4895a; --citron:#d4e020; --violet:#8a2ba0;
+  --silver:#c9c8c0; --pearl:#ececea;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif;
+}
+*{box-sizing:border-box}
+.oxe-root{background:var(--bg);color:var(--ink);font-family:var(--sans);min-height:100vh;font-size:14px;line-height:1.5}
+.oxe-root *::selection{background:var(--accent);color:#fff}
+.loadwrap{padding:60px;text-align:center;color:var(--muted);font-family:var(--mono)}
+
+/* topbar */
+.topbar{display:flex;justify-content:space-between;align-items:center;padding:16px 22px;border-bottom:1px solid var(--line);position:sticky;top:0;background:rgba(12,15,20,.92);backdrop-filter:blur(8px);z-index:20;flex-wrap:wrap;gap:12px}
+.brand{display:flex;gap:13px;align-items:center}
+.brandMark{width:38px;height:38px;border-radius:9px;background:var(--accent);color:#fff;font-weight:800;display:grid;place-items:center;font-size:15px;letter-spacing:.5px}
+.brandTitle{font-weight:700;font-size:16px;letter-spacing:-.2px}
+.brandSub{color:var(--muted);font-size:12px}
+.brandSub b{color:var(--ink)}
+.topActions{display:flex;gap:10px;align-items:center}
+.alertPill{background:rgba(240,72,30,.12);color:var(--red);border:1px solid rgba(240,72,30,.4);padding:7px 12px;border-radius:99px;font-size:12px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:7px}
+.dot{width:7px;height:7px;border-radius:50%;background:currentColor;display:inline-block;box-shadow:0 0 0 0 currentColor;animation:pulse 1.8s infinite}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(240,72,30,.5)}70%{box-shadow:0 0 0 6px rgba(240,72,30,0)}100%{box-shadow:0 0 0 0 rgba(240,72,30,0)}}
+
+/* tabs */
+.tabs{display:flex;gap:2px;padding:0 22px;border-bottom:1px solid var(--line);overflow-x:auto}
+.tab{background:none;border:none;color:var(--muted);padding:13px 16px;font-size:13px;font-weight:600;cursor:pointer;border-bottom:2px solid transparent;white-space:nowrap;font-family:var(--sans)}
+.tab:hover{color:var(--ink)}
+.tab.on{color:var(--ink);border-bottom-color:var(--accent)}
+
+.main{padding:22px;max-width:1180px;margin:0 auto}
+
+/* bars / filters */
+.bar{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px;flex-wrap:wrap}
+.filters{display:flex;gap:8px;flex-wrap:wrap}
+.select,.field select{background:var(--panel2);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:8px 11px;font-size:13px;font-family:var(--sans);cursor:pointer}
+.legend{color:var(--muted);font-size:12px;margin-bottom:10px;font-family:var(--mono)}
+
+/* buttons */
+.btn{border-radius:8px;padding:9px 15px;font-size:13px;font-weight:600;cursor:pointer;border:1px solid var(--line);font-family:var(--sans);transition:.12s}
+.btn.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+.btn.primary:hover{filter:brightness(1.08)}
+.btn.ghost{background:var(--panel2);color:var(--ink)}
+.btn.ghost:hover{border-color:var(--muted)}
+.btn.small{padding:6px 11px;font-size:12px}
+.btn.danger{color:var(--red);border-color:rgba(240,72,30,.3)}
+a.btn{text-decoration:none;display:inline-block}
+
+/* table */
+.tablewrap{border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--panel)}
+.grid{width:100%;border-collapse:collapse}
+.grid th{text-align:left;padding:11px 14px;font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);border-bottom:1px solid var(--line);font-weight:600}
+.grid th.num{width:46px}
+.grid td{padding:12px 14px;border-bottom:1px solid var(--line);vertical-align:middle}
+.grid tbody tr{cursor:pointer;transition:.1s}
+.grid tbody tr:hover{background:var(--panel2)}
+.grid tbody tr:last-child td{border-bottom:none}
+.toprow{background:linear-gradient(90deg,var(--accent-dim),transparent 40%)}
+.num{font-family:var(--mono);text-align:left}
+.rank{color:var(--muted);font-weight:700}
+.toprow .rank{color:var(--accent)}
+.coName{font-weight:600}
+.coSub{color:var(--muted);font-size:11px;font-family:var(--mono)}
+.typeTag{font-size:11px;font-family:var(--mono);color:var(--muted);border:1px solid var(--line);padding:2px 7px;border-radius:5px;white-space:nowrap}
+.chev{color:var(--muted);font-size:20px;text-align:right;width:30px}
+
+/* meter */
+.meter{position:relative;width:96px;height:20px;background:var(--panel2);border-radius:5px;overflow:hidden;display:flex;align-items:center}
+.meterFill{position:absolute;left:0;top:0;bottom:0;opacity:.32;border-radius:5px}
+.meterVal{position:relative;font-family:var(--mono);font-weight:700;font-size:13px;padding-left:9px}
+
+/* badges */
+.statusBadge{font-size:11px;font-weight:600;border:1px solid;padding:3px 9px;border-radius:99px;white-space:nowrap}
+.fuBadge{font-size:12px;font-weight:600;font-family:var(--mono);display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+.muted{color:var(--muted)}
+.small{font-size:12px}
+
+/* empty */
+.empty,.miniEmpty{text-align:center;padding:48px 20px;border:1px dashed var(--line);border-radius:12px;background:var(--panel)}
+.miniEmpty{padding:24px;font-size:13px;color:var(--muted)}
+.emptyTitle{font-weight:700;margin-bottom:6px}
+.emptyText{color:var(--muted);margin-bottom:18px}
+
+/* drawer */
+.drawerScrim{position:fixed;inset:0;background:rgba(0,0,0,.55);backdrop-filter:blur(2px);z-index:40;display:flex;justify-content:flex-end}
+.drawer{width:min(560px,100%);background:var(--panel);height:100%;overflow-y:auto;border-left:1px solid var(--line);animation:slide .18s ease}
+@keyframes slide{from{transform:translateX(24px);opacity:.6}to{transform:none;opacity:1}}
+.drawerHead{display:flex;justify-content:space-between;align-items:flex-start;padding:20px 22px 14px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--panel);z-index:2}
+.drawerName{background:none;border:none;color:var(--ink);font-size:18px;font-weight:700;width:100%;font-family:var(--sans)}
+.drawerName-static{font-size:18px;font-weight:700}
+.drawerName:focus{outline:none;border-bottom:1px solid var(--accent)}
+.drawerMeta{display:flex;gap:8px;align-items:center;margin-top:6px;color:var(--muted);font-size:12px}
+.iconBtn{background:var(--panel2);border:1px solid var(--line);color:var(--muted);width:32px;height:32px;border-radius:8px;cursor:pointer;font-size:14px;flex-shrink:0}
+.iconBtn:hover{color:var(--ink)}
+.scoreHero{display:flex;gap:16px;align-items:center;padding:18px 22px;border-bottom:1px solid var(--line)}
+.scoreBig{font-family:var(--mono);font-size:46px;font-weight:800;line-height:1}
+.scoreBand{font-weight:700}
+.segmented{display:flex;gap:4px;padding:14px 22px 0}
+.segmented button{flex:1;background:var(--panel2);border:1px solid var(--line);color:var(--muted);padding:9px;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600;font-family:var(--sans)}
+.segmented button.on{color:var(--ink);border-color:var(--accent);background:var(--accent-dim)}
+.drawerBody{padding:18px 22px 40px}
+.sectionLabel{font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);margin:20px 0 10px;font-weight:600}
+
+/* fields */
+.field{display:block;margin-bottom:13px}
+.field>span{display:block;font-size:12px;color:var(--muted);margin-bottom:5px}
+.field input,.field textarea{width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:9px 11px;color:var(--ink);font-size:13px;font-family:var(--sans);resize:vertical}
+.field input:focus,.field textarea:focus,.select:focus{outline:none;border-color:var(--accent)}
+.fieldRow2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+
+/* score rows */
+.scoreRow{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:9px 0;border-bottom:1px solid var(--line)}
+.scoreRowLabel{font-size:13px;display:flex;flex-direction:column;gap:2px}
+.wTag{font-family:var(--mono);font-size:11px;color:var(--accent)}
+.hint{font-size:11px;color:var(--muted)}
+.scoreDots{display:flex;gap:4px;flex-shrink:0}
+.dotBtn{width:28px;height:28px;border-radius:6px;border:1px solid var(--line);background:var(--panel2);color:var(--muted);cursor:pointer;font-family:var(--mono);font-size:12px}
+.dotBtn:hover{border-color:var(--muted)}
+.dotBtn.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+
+/* outreach drawer */
+.outreachStat{display:flex;gap:18px;padding:12px 0;border-bottom:1px solid var(--line);margin-bottom:14px;flex-wrap:wrap}
+.outreachStat>div{display:flex;flex-direction:column;gap:4px;font-size:13px}
+.outreachStat .muted{font-size:11px}
+.mailField{margin-bottom:8px}
+.mailSubject{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:9px 11px;font-size:13px;font-weight:600}
+.mailBody{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:13px;font-size:12.5px;white-space:pre-wrap;font-family:var(--sans);line-height:1.6;margin:6px 0 14px;max-height:300px;overflow:auto}
+.mailActions{display:flex;gap:10px;margin:6px 0}
+.finePrint{font-size:11.5px;color:var(--muted);margin-top:12px;line-height:1.5}
+
+/* logic */
+.panelIntro{margin-bottom:18px;max-width:680px}
+.panelIntro h2{font-size:20px;margin:0 0 6px;letter-spacing:-.3px}
+.panelIntro p{color:var(--muted);font-size:13px;margin:0}
+.panelIntro b{color:var(--ink)}
+.logicList{display:flex;flex-direction:column;gap:8px;margin-bottom:14px}
+.logicRow{display:flex;gap:14px;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:11px 13px}
+.logicMain{flex:1;display:flex;flex-direction:column;gap:4px;min-width:0}
+.logicLabel{background:none;border:none;color:var(--ink);font-size:14px;font-weight:600;font-family:var(--sans)}
+.logicHint{background:none;border:none;color:var(--muted);font-size:12px;font-family:var(--sans)}
+.logicLabel:focus,.logicHint:focus{outline:none}
+.weightCtl{display:flex;align-items:center;gap:9px;flex-shrink:0}
+.weightCtl input[type=range]{accent-color:var(--accent);width:90px}
+.weightNum{font-family:var(--mono);font-weight:700;width:14px;color:var(--accent)}
+
+/* outreach grid */
+.outreachGrid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px}
+.card h3{margin:0 0 6px;font-size:15px}
+.card.sending{grid-column:1/-1}
+.card code{background:var(--panel2);padding:1px 6px;border-radius:4px;font-family:var(--mono);font-size:11px;color:var(--cyan)}
+.dueList{list-style:none;margin:12px 0 0;padding:0;display:flex;flex-direction:column;gap:8px}
+.dueItem{display:flex;justify-content:space-between;align-items:center;gap:12px;background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:10px 12px}
+.dueName{font-weight:600;font-size:13px}
+.dueRight{display:flex;align-items:center;gap:10px;flex-shrink:0}
+.cadenceRow{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:12px}
+.cadenceChip{display:flex;align-items:center;gap:5px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:5px 9px}
+.cadenceChip input{width:46px;background:none;border:none;color:var(--ink);font-family:var(--mono);font-size:14px;font-weight:700;text-align:center}
+.cadenceChip input:focus{outline:none}
+.xMini{background:none;border:none;color:var(--muted);cursor:pointer;font-size:11px;padding:0 2px}
+.xMini:hover{color:var(--red)}
+.howList{margin:10px 0 0;padding-left:18px;color:var(--muted);font-size:12.5px;line-height:1.7}
+.howList b{color:var(--ink)}
+
+/* markets */
+.regionCard{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:15px 16px;margin-bottom:12px}
+.regionHead{display:flex;align-items:center;gap:12px;margin-bottom:12px}
+.regionName{background:none;border:none;color:var(--ink);font-size:16px;font-weight:700;font-family:var(--sans);flex-shrink:0}
+.regionName:focus{outline:none;border-bottom:1px solid var(--accent)}
+.regionHead .muted{flex:1}
+.chips{display:flex;gap:7px;flex-wrap:wrap;align-items:center}
+.countryChip{display:inline-flex;align-items:center;gap:6px;background:var(--panel2);border:1px solid var(--line);border-radius:7px;padding:5px 9px;font-size:12.5px}
+.chipCount{background:var(--accent);color:#fff;font-family:var(--mono);font-size:10px;padding:1px 5px;border-radius:99px;font-weight:700}
+.countryAdd input{background:transparent;border:1px dashed var(--line);border-radius:7px;padding:5px 9px;color:var(--ink);font-size:12.5px;width:96px;font-family:var(--sans)}
+.countryAdd input:focus{outline:none;border-color:var(--accent)}
+
+/* export menu */
+.exportWrap{position:relative}
+.menu{position:absolute;right:0;top:42px;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:6px;min-width:200px;z-index:30;box-shadow:0 12px 30px rgba(0,0,0,.4)}
+.menu button{display:block;width:100%;text-align:left;background:none;border:none;color:var(--ink);padding:9px 11px;border-radius:7px;cursor:pointer;font-size:13px;font-family:var(--sans)}
+.menu button:hover{background:var(--panel)}
+.menuDanger{color:var(--red)!important;border-top:1px solid var(--line)!important;border-radius:0!important;margin-top:4px}
+.menuSep{height:1px;background:var(--line);margin:4px 0}
+.importCard{background:var(--panel);border:1px solid var(--line);border-radius:14px;width:min(560px,calc(100% - 32px));max-height:90vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,.5)}
+.importBody{padding:0 20px 20px}
+.csvHint{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:10px 12px;font-size:12px;line-height:1.6;margin-bottom:12px}
+.csvHint code{background:var(--bg);padding:1px 6px;border-radius:4px;font-family:var(--mono);font-size:11px;color:var(--cyan)}
+.fileInput{display:block;margin-bottom:10px;color:var(--muted);font-size:12px}
+.importArea{width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:11px;color:var(--ink);font-family:var(--mono);font-size:12px;resize:vertical}
+.importArea:focus{outline:none;border-color:var(--accent)}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.adminToggle{display:flex;align-items:center;gap:7px;background:var(--panel2);border:1px solid var(--line);color:var(--muted);padding:8px 12px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;font-family:var(--sans)}
+.adminToggle.on{color:var(--ink);border-color:var(--green)}
+.adminDot{width:7px;height:7px;border-radius:50%;background:var(--muted)}
+.adminToggle.on .adminDot{background:var(--green);box-shadow:0 0 8px var(--green)}
+.liMini{font-family:var(--mono);font-size:10px;color:var(--cyan);text-decoration:none;border:1px solid var(--line);padding:0 5px;border-radius:4px;margin-left:7px}
+.liMini:hover{border-color:var(--cyan)}
+.liLink{display:inline-block;color:var(--cyan);font-size:12px;text-decoration:none;margin:-6px 0 12px}
+.liLink:hover{text-decoration:underline}
+.approvalRow{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px}
+.apprBadge{font-size:11px;font-weight:600;border:1px solid;padding:3px 10px;border-radius:99px;white-space:nowrap}
+.btn.full{width:100%}
+.disabledLink{opacity:.45;cursor:not-allowed;pointer-events:none}
+.adminCallout{display:flex;align-items:center;gap:12px;flex-wrap:wrap;background:var(--accent-dim);border:1px solid var(--accent);border-radius:10px;padding:11px 14px;font-size:13px;margin-bottom:16px}
+.apprList{list-style:none;margin:10px 0 6px;padding:0;display:flex;flex-direction:column;gap:8px}
+.apprItem{display:flex;justify-content:space-between;align-items:center;gap:12px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:11px 13px}
+.apprItem.sentItem{opacity:.7}
+.apprMain{min-width:0;flex:1}
+
+/* dashboard */
+.dash{display:flex;flex-direction:column;gap:16px}
+.kpiRow{display:grid;grid-template-columns:repeat(6,1fr);gap:12px}
+.kpi{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 14px}
+.kpi.click{cursor:pointer;transition:.12s}
+.kpi.click:hover{border-color:var(--accent)}
+.kpiVal{font-family:var(--mono);font-size:30px;font-weight:800;line-height:1}
+.kpiLabel{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.5px;margin-top:7px}
+.dashAlert{display:flex;align-items:center;gap:9px;background:rgba(240,72,30,.12);border:1px solid rgba(240,72,30,.4);color:var(--red);border-radius:10px;padding:11px 14px;font-size:13px;font-weight:600;cursor:pointer}
+.dashGrid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.dashWide{grid-column:1/-1}
+.dashTable th,.dashTable td{padding:9px 12px}
+.dashTable tbody tr{cursor:default}
+.dashTable tbody tr:hover{background:transparent}
+.barRow{display:flex;align-items:center;gap:10px;margin:8px 0}
+.barLabel{font-size:12px;width:150px;flex-shrink:0}
+.barTrack{flex:1;height:9px;background:var(--panel2);border-radius:5px;overflow:hidden}
+.barFill{height:100%;border-radius:5px;min-width:2px;transition:width .3s}
+.barNum{font-family:var(--mono);font-size:13px;font-weight:700;width:26px;text-align:right}
+.compStat{display:flex;gap:28px;padding:6px 0 12px;border-bottom:1px solid var(--line);margin-bottom:12px}
+.compBig{font-family:var(--mono);font-size:32px;font-weight:800;line-height:1}
+.compList{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:7px}
+.compItem{display:flex;align-items:center;gap:9px;flex-wrap:wrap;font-size:13px}
+.compFlag{font-family:var(--mono);font-size:10px;font-weight:700;padding:2px 7px;border-radius:5px;border:1px solid var(--cyan);color:var(--cyan)}
+.compFlag.conflict{border-color:var(--red);color:var(--red)}
+.compBrands{color:var(--muted);font-size:12px}
+.compNote{font-size:12px;border-radius:8px;padding:8px 11px;margin-bottom:12px;border:1px solid var(--cyan);color:var(--cyan);background:rgba(126,214,255,.08)}
+.compNote.conflict{border-color:var(--red);color:var(--red-soft);background:rgba(240,72,30,.08)}
+.statusMini{display:flex;gap:5px;flex-wrap:wrap}
+.smChip{font-size:10px;border:1px solid;padding:1px 6px;border-radius:99px;white-space:nowrap}
+.oppList{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px}
+.oppItem{display:flex;align-items:center;gap:12px;background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:9px 12px;cursor:pointer}
+.oppItem:hover{border-color:var(--accent)}
+.oppRank{font-family:var(--mono);font-weight:800;color:var(--accent);width:18px}
+.oppMain{flex:1;display:flex;flex-direction:column}
+@media(max-width:820px){.kpiRow{grid-template-columns:repeat(3,1fr)}.dashGrid{grid-template-columns:1fr}.barLabel{width:110px}}
+
+/* toast */
+.toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:11px 20px;border-radius:99px;font-size:13px;font-weight:600;z-index:60;box-shadow:0 8px 24px rgba(0,0,0,.4)}
+
+@media(max-width:720px){
+  .outreachGrid{grid-template-columns:1fr}
+  .fieldRow2{grid-template-columns:1fr}
+  .main{padding:16px}
+  .meter{width:72px}
+}
+`}</style>
+  );
+}
+
+
+ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
+</script>
+</body>
+</html>
