@@ -248,7 +248,6 @@ window.MS_CONFIG = {
 <script type="text/babel" data-presets="react">
 const { useState, useEffect, useMemo, useRef } = React;
 
-
 /* =========================================================================
    OxeFit Distribution Builder — Core Velocity
    A distributor pipeline + scoring + outreach console.
@@ -876,6 +875,7 @@ function App() {
   const [toast, setToast] = useState("");
   const [admin, setAdmin] = useState(() => typeof window !== "undefined" && !!window.__OXE_ADMIN__);
   const saveTimer = useRef(null);
+  const lastPayload = useRef(null);
 
   // backfill new fields + migrate old statuses on any loaded/imported data
   const normalize = (s) => {
@@ -908,16 +908,34 @@ function App() {
     })();
   }, []);
 
-  /* save (debounced) */
+  /* save — write the durable cache fast; the storage adapter batches the cloud push itself */
   useEffect(() => {
     if (!loaded || !state) return;
+    const payload = JSON.stringify({ ...state, updatedAt: new Date().toISOString() });
+    lastPayload.current = payload;               // always hold the very latest, synchronously
     clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(async () => {
-      try {
-        await window.storage.set(STORAGE_KEY, JSON.stringify({ ...state, updatedAt: new Date().toISOString() }));
-      } catch { /* in-memory only; export to be safe */ }
-    }, 500);
+    saveTimer.current = setTimeout(() => {
+      try { window.storage.set(STORAGE_KEY, payload); } catch { /* in-memory only */ }
+    }, 150);
   }, [state, loaded]);
+
+  /* flush the latest state before ANY navigation — MSAL token-refresh redirects and tab
+     closes fire pagehide/visibilitychange; writing here guarantees an add is never lost */
+  useEffect(() => {
+    const flush = () => {
+      if (!lastPayload.current) return;
+      try { window.storage.set(STORAGE_KEY, lastPayload.current); } catch {}
+    };
+    const onVis = () => { if (document.visibilityState === "hidden") flush(); };
+    window.addEventListener("pagehide", flush);
+    window.addEventListener("beforeunload", flush);
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      window.removeEventListener("beforeunload", flush);
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, []);
 
   const flash = (m) => { setToast(m); setTimeout(() => setToast(""), 1800); };
   const patch = (fn) => setState((s) => { const n = structuredClone(s); fn(n); return n; });
@@ -2355,7 +2373,7 @@ a.btn{text-decoration:none;display:inline-block}
 
 
 window.__oxeBoot().then(function (ok) {
-  if (ok) ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
+  if (ok && window.self === window.top) ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App));
 });
 </script>
 </body>
