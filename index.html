@@ -647,6 +647,29 @@ const COMPETITORS = {
   "Sports Solutions LLC": "Precor (LF-family) + Queenax — sole Oman distributor; rehab/hospitality",
   "Athletics Trading SPC": "Al Reza Group — multi-brand (verify portfolio)",
   "Agatex": "Star Trac, Nautilus (Core Health & Fitness family) — hotels/resorts",
+  // --- deepen: South Africa · Australia · India ---
+  "FitnessWorld WC": "Multi-brand commercial + home (verify portfolio)",
+  "Fitness Network SA": "Force USA + multi-brand — one of SA's largest",
+  "Rebel Elite Fitness": "Concept2 (official SA distributor), Reebok, uvex — functional/performance",
+  "Fitness Breakthru": "Multi-brand strength + cardio (verify)",
+  "Gym Gear SA": "Premium multi-brand (verify)",
+  "Commercial Fitness Equipment (CFE)": "Wholesale-direct premium commercial (verify brands)",
+  "Aussie Fitness Equipment": "Multi-brand commercial fit-out (verify)",
+  "Premier Fitness Supply": "Custom rigs + multi-brand fit-out (AU + NZ)",
+  "Sam's Fitness": "ATX, Ironmaster, Spud Inc, GymPin, Power Maxx — official AU distributor",
+  "247 Gym Equipment": "Commercial-grade + flooring (verify brands)",
+  "Verdure Wellness": "Premium imported cardio + strength — hotels, clubhouses (verify)",
+  "Wellness Gym India": "Importer + national dealer network — hotels/corporate/chains",
+  "Nortus Fitness": "Made-in-India manufacturer + national dealer network",
+  "Universal Fitness": "Est. 1978 — hotels/resorts/corporate + medical & physiotherapy",
+  "Jerai Fitness": "Manufacturer + supplier (Delhi + Mumbai)",
+  "Fitline India": "Commercial gym equipment (Delhi) (verify)",
+  "Wellness Equip": "Technogym, Life Fitness, Precor, Matrix, Cybex, Hammer Strength, Star Trac — CONFLICT: tier-1 incumbents (new + pre-owned)",
+  "All Out Fitness": "Multi-brand sales + service (Technogym, Life Fitness, Precor, Star Trac, Hammer Strength …)",
+  "Iron Edge": "Own functional/strength manufacture + fit-outs; allied-health / rehab line",
+  "Orbit Fitness": "Multi-brand + Reformer Pilates — hospitality / studio fit-outs",
+  "Grays Fitness": "Pre-owned Life Fitness, Technogym, Star Trac, Nautilus, Cybex, Hammer Strength, Iron Edge",
+  "DRS Fitking": "Imported premium multi-brand (Delhi / Bangalore)",
 };
 // brands that count as a DIRECT premium-connected competitor when present
 const COMPETITOR_KEYWORDS = ["Technogym", "Life Fitness", "LF-family", "Speediance", "Tonal", "Peloton", "Vitruvian", "Cybex", "Precor", "Hammer", "Keiser", "Matrix"];
@@ -859,6 +882,102 @@ const EXPAND2_SET = [
     scores: [3, 3, 4, 4, 2, 3, 3, 2] },
 ];
 const expand2Prospects = (criteria) => setToProspects(EXPAND2_SET, criteria);
+
+/* deepen coverage: South Africa · Australia · India (6+ new candidates each) */
+const DEEPEN_SET = [
+  // ---------- South Africa (region: Africa) ----------
+  { name: "FitnessWorld WC", type: "Distributor", region: "Africa", country: "South Africa", website: "https://www.fitnessworldwc.co.za",
+    decisionMaker: "", linkedIn: "", contactEmail: "",
+    notes: "Cape Town specialist since 2003. Commercial + home; in-house servicing & maintenance; serves clients across SA and abroad. Strong product knowledge + after-sales. Verify contact.",
+    scores: [3, 4, 4, 4, 2, 3, 3, 2] },
+  { name: "Fitness Network SA", type: "Distributor", region: "Africa", country: "South Africa", website: "https://www.fitnessnetwork.co.za",
+    decisionMaker: "", linkedIn: "", contactEmail: "",
+    notes: "One of SA's largest — showrooms in Johannesburg + Gqeberha (Port Elizabeth), big stock holding, nationwide delivery. Carries Force USA; commercial, studio and home. Tel 010 465 0019. Verify contact.",
+    scores: [3, 4, 4, 4, 2, 3, 3, 2] },
+  { name: "Rebel Elite Fitness", type: "Distributor", region: "Africa", country: "South Africa", website: "",
+    decisionMaker: "", linkedIn: "", contactEmail: "",
+    notes: "Functional / performance channel; official Concept2 distributor for SA and exports across Africa (Reebok, uvex, Bear Komplex). Good route into CrossFit / performance boxes — complements OxeFit rather than competing. Verify contact + website.",
+    scores: [3, 3, 4, 4, 2, 3, 3, 3] },
+  { name: "Fitness Breakthru", type: "Distributor", region: "Africa", country: "South Africa", website: "https://gymequipment.co.za",
+    decisionMaker: "", linkedIn: "", contactEmail: "",
+    notes: "24+ years; physical showroom; strength + cardio for home and commercial; nationwide free delivery; 24/7 WhatsApp support; 770+ Google reviews (SA's highest-rated). Verify contact.",
+    scores: [3, 4, 4, 4, 2, 3, 3, 2] },
+  { name: "Gym Gear SA", type: "Dealer", region: "Africa", country: "South Africa", website: "https://gymgear.co.za",
+    decisionMaker: "", linkedIn: "", contactEmail: "",
+    notes: "High-end domestic + commercial; positions on original/premium brands with full manufacturer warranty. Verify portfolio + contact.",
+    scores: [3, 3, 4, 4, 2, 3, 3, 2] },
+  { name: "Wellness Equip", type: "Distributor", region: "Africa", country: "South Africa", website: "https://wellnessequip.co.za",
+    decisionMaker: "", linkedIn: "", contactEmail: "",
+    notes: "Supplies + services Technogym, Life Fitness, Precor, Matrix, Cybex, Hammer Strength, Star Trac (new + pre-owned); custom wellness-facility design for gyms, HOTELS and corporate; nationwide install. CONFLICT: carries tier-1 incumbents, but a proven premium/hospitality channel with design + service muscle. Verify contact.",
+    scores: [4, 4, 5, 4, 2, 3, 4, 3] },
+  { name: "All Out Fitness", type: "Fit-out", region: "Africa", country: "South Africa", website: "https://alloutfitness.co.za",
+    decisionMaker: "", linkedIn: "", contactEmail: "",
+    notes: "Sales + nationwide service/repair across virtually every major brand (Technogym, Life Fitness, Precor, Star Trac, Hammer Strength, Concept2 …). Best value as an after-sales / service partner underpinning an OxeFit rollout. Verify contact.",
+    scores: [2, 5, 3, 3, 2, 3, 2, 3] },
+  // ---------- Australia (region: Australia) ----------
+  { name: "Commercial Fitness Equipment (CFE)", type: "Distributor", region: "Australia", country: "Australia", website: "https://commercialfitnessequipment.com.au",
+    decisionMaker: "", linkedIn: "", contactEmail: "",
+    notes: "Positions as Australia's leading wholesale-direct premium commercial supplier. Finance + complete install + design. National. Verify contact.",
+    scores: [3, 4, 4, 4, 2, 3, 3, 2] },
+  { name: "Aussie Fitness Equipment", type: "Distributor", region: "Australia", country: "Australia", website: "https://www.aussiefitness.com.au",
+    decisionMaker: "", linkedIn: "", contactEmail: "",
+    notes: "Premium commercial fit-outs nationwide (Perth · Sydney · Adelaide · Brisbane · Melbourne). End-to-end: design, product, finance, delivery, install. Boutique studios → large facilities. Verify contact.",
+    scores: [3, 4, 4, 4, 2, 3, 3, 2] },
+  { name: "Premier Fitness Supply", type: "Fit-out", region: "Australia", country: "Australia", website: "https://www.premierfitnesssupply.com.au",
+    decisionMaker: "James Thai (verify)", linkedIn: "", contactEmail: "",
+    notes: "Fit-outs + equipment across AU + Auckland NZ; custom rigs and smart gym layouts led by industry veteran James Thai. Multi-item packages. Good design-led partner. Verify email.",
+    scores: [3, 4, 4, 4, 2, 3, 3, 2] },
+  { name: "Sam's Fitness", type: "Distributor", region: "Australia", country: "Australia", website: "https://samsfitness.com.au",
+    decisionMaker: "", linkedIn: "", contactEmail: "",
+    notes: "20+ years; official AU distributor for ATX, Ironmaster, Spud Inc, GymPin, Power Maxx. Home + commercial; curated premium-brand model. Verify contact.",
+    scores: [3, 4, 4, 4, 2, 3, 3, 2] },
+  { name: "247 Gym Equipment", type: "Dealer", region: "Australia", country: "Australia", website: "https://247gymequipment.com.au",
+    decisionMaker: "", linkedIn: "", contactEmail: "",
+    notes: "Sydney-based (Milperra), Australian-owned; commercial-grade + PT studio + home; flooring; depots in Melbourne/Brisbane/Adelaide/Canberra; assembly + install. Verify contact.",
+    scores: [3, 3, 4, 4, 2, 3, 3, 2] },
+  { name: "Iron Edge", type: "Fit-out", region: "Australia", country: "Australia", website: "https://ironedge.com.au",
+    decisionMaker: "", linkedIn: "", contactEmail: "",
+    notes: "Australia's leading functional/strength supplier + full commercial fit-outs (13+ yrs). Elite sport (Collingwood FC, Melbourne Storm, ADF, AIS), major commercial gyms (Fitness First), schools, and a dedicated ALLIED HEALTH / REHAB line — strong fit for OxeFit's clinical + performance positioning. Free 3D CAD design, nationwide install, finance. Verify contact.",
+    scores: [4, 4, 5, 4, 3, 4, 4, 4] },
+  { name: "Orbit Fitness", type: "Distributor", region: "Australia", country: "Australia", website: "https://orbitfitness.com.au",
+    decisionMaker: "", linkedIn: "", contactEmail: "",
+    notes: "30+ years; supplies gyms, studios, HOTELS and commercial facilities; 3D layout design, install and ongoing maintenance; Reformer Pilates. Trusted by gyms, schools, mines and community centres nationwide. Verify contact.",
+    scores: [3, 4, 5, 4, 2, 3, 3, 3] },
+  { name: "Grays Fitness", type: "Reseller", region: "Australia", country: "Australia", website: "https://graysfitness.com.au",
+    decisionMaker: "", linkedIn: "", contactEmail: "",
+    notes: "Australia's largest supplier of pre-owned commercial gym equipment (18+ yrs) — Life Fitness, Technogym, Star Trac, Nautilus, Cybex, Hammer Strength, Iron Edge. Serves hotels, apartments, hospitals, corporate, government and schools. Budget-conscious hospitality / fit-out channel. Verify contact.",
+    scores: [2, 4, 4, 4, 2, 4, 3, 2] },
+  // ---------- India (region: APAC) ----------
+  { name: "Verdure Wellness", type: "Distributor", region: "APAC", country: "India", website: "https://www.verdurewellness.net",
+    decisionMaker: "", linkedIn: "", contactEmail: "",
+    notes: "Delhi/Mumbai premium supplier; cardio + strength deployed across fitness centres, HOTELS, apartment clubhouses and personal gyms. Strong hospitality + residential angle. Verify contact.",
+    scores: [3, 3, 4, 4, 2, 3, 3, 2] },
+  { name: "Wellness Gym India", type: "Distributor", region: "APAC", country: "India", website: "https://wellnessgymindia.com",
+    decisionMaker: "", linkedIn: "", contactEmail: "",
+    notes: "Importer + supplier with a national dealer network; end-to-end commercial setup (planning, selection, flooring, after-sales). Partners with fitness chains, HOTELS and corporate wellness. Wholesale to distributors/dealers. Verify contact.",
+    scores: [3, 4, 4, 4, 2, 3, 3, 2] },
+  { name: "Nortus Fitness", type: "Distributor", region: "APAC", country: "India", website: "https://www.nortusfitness.com",
+    decisionMaker: "", linkedIn: "", contactEmail: "",
+    notes: "Manufacturer + national dealer network (\"Made in India\") across 25+ cities; gym planning, design and setup + export. Broad commercial reach. Verify contact.",
+    scores: [3, 3, 4, 5, 2, 3, 3, 2] },
+  { name: "Universal Fitness", type: "Distributor", region: "APAC", country: "India", website: "https://gymmanufacturer.in",
+    decisionMaker: "", linkedIn: "", contactEmail: "",
+    notes: "Established 1978 (opened Delhi's first-ever gym); supplies gyms, HOTELS, resorts, corporate, government and MEDICAL & PHYSIOTHERAPY centres — good clinical/hospitality fit. Delhi/NCR. Verify contact.",
+    scores: [3, 3, 4, 4, 2, 3, 3, 3] },
+  { name: "Jerai Fitness", type: "Distributor", region: "APAC", country: "India", website: "https://www.jeraifitness.com",
+    decisionMaker: "", linkedIn: "", contactEmail: "",
+    notes: "Manufacturer + supplier with offices/showrooms in New Delhi and Mumbai; commercial racks, machines and strength. Verify contact.",
+    scores: [3, 3, 4, 4, 2, 3, 3, 2] },
+  { name: "Fitline India", type: "Dealer", region: "APAC", country: "India", website: "",
+    decisionMaker: "", linkedIn: "", contactEmail: "",
+    notes: "Delhi commercial gym equipment supplier for fitness clubs and health centres. Verify portfolio + contact (listed via TradeIndia).",
+    scores: [2, 3, 4, 4, 2, 3, 2, 2] },
+  { name: "DRS Fitking", type: "Fit-out", region: "APAC", country: "India", website: "https://www.fitkingindia.com",
+    decisionMaker: "", linkedIn: "", contactEmail: "",
+    notes: "Imported gym-setup distributor / wholesaler (New Delhi + Bangalore). End-to-end: site assessment, layout, customs clearance, ICRA-certified install techs; commercial, corporate, residential and boutique setups from a global brand network. Verify contact.",
+    scores: [3, 4, 4, 4, 2, 3, 3, 2] },
+];
+const deepenProspects = (criteria) => setToProspects(DEEPEN_SET, criteria);
 
 /* append, skipping duplicates by name+country (case-insensitive) */
 function mergeProspects(existing, incoming) {
@@ -1965,6 +2084,14 @@ function ExportMenu({ state, flash, setState }) {
     });
     setOpen(false);
   };
+  const loadDeepen = () => {
+    setState((s) => {
+      const { merged, addedCount, skipped } = mergeProspects(s.prospects, deepenProspects(s.criteria));
+      flash(addedCount ? `Loaded ${addedCount} prospect${addedCount > 1 ? "s" : ""}${skipped ? ` · ${skipped} already present` : ""}` : "SA · AU · India set already loaded");
+      return { ...s, prospects: merged };
+    });
+    setOpen(false);
+  };
   const doImport = (text) => {
     let incoming = [];
     const trimmed = text.trim();
@@ -2009,6 +2136,7 @@ function ExportMenu({ state, flash, setState }) {
           <button onClick={loadGlobal}>★ Load expansion set (APAC · AU · Africa · CEE)</button>
           <button onClick={loadPartners}>★ Load fit-out &amp; partner set (UAE · KSA · India · AU)</button>
           <button onClick={loadExpand2}>★ Load expansion II (Gulf · Africa · CEE · SE Asia)</button>
+          <button onClick={loadDeepen}>★ Load SA · Australia · India set</button>
           <button onClick={() => { setImporting(true); setOpen(false); }}>Import CSV / JSON…</button>
           <div className="menuSep" />
           <button onClick={csv}>Download CSV</button>
